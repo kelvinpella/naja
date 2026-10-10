@@ -27,16 +27,7 @@ export const STAGE_MESSAGES: Record<StageId, StageMessage> = {
   job_apply: JOB_APPLY_MESSAGE,
 };
 
-const STAGE_IDS: ReadonlySet<string> = new Set([
-  "get_started",
-  "tafuta_kazi",
-  "tafuta_kazi_search",
-  "tafuta_kazi_mixed",
-  "tangaza_kazi",
-  "vigezo_na_masharti",
-  "job_detail",
-  "job_apply",
-]);
+const STAGE_IDS: ReadonlySet<string> = new Set(Object.keys(STAGE_MESSAGES));
 
 export function isStageId(value: string | undefined): value is StageId {
   return typeof value === "string" && STAGE_IDS.has(value);

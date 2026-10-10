@@ -5,7 +5,7 @@ import {
   type JobListing,
   type JobPage,
 } from "./job-types.js";
-import { getJobsClient } from "./supabase-client.js";
+import { getJobsClient, getJobsServiceClient } from "./supabase-client.js";
 
 type JobRow = {
   id: string;
@@ -45,6 +45,24 @@ export function setJobsDataSource(source: JobsDataSource | null): void {
   dataSourceOverride = source;
 }
 
+export function resetJobsDataSource(): void {
+  dataSourceOverride = null;
+}
+
+// Scoped override that always resets (prevents test doubles leaking into prod).
+export async function runWithJobsDataSource<T>(
+  source: JobsDataSource | null,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const previous = dataSourceOverride;
+  dataSourceOverride = source;
+  try {
+    return await fn();
+  } finally {
+    dataSourceOverride = previous;
+  }
+}
+
 function toListing(row: JobRow): JobListing {
   return {
     id: row.id,
@@ -61,8 +79,17 @@ function toListing(row: JobRow): JobListing {
 }
 
 function toPage(rows: JobRow[]): JobPage {
+  if (JOB_FETCH_SIZE !== JOB_PAGE_SIZE + 1) {
+    throw new Error("JOB_FETCH_SIZE must equal JOB_PAGE_SIZE + 1 for hasMore detection");
+  }
   const hasMore = rows.length > JOB_PAGE_SIZE;
   return { jobs: rows.slice(0, JOB_PAGE_SIZE).map(toListing), hasMore };
+}
+
+function normalizeOffset(offset: number): number {
+  const n = Number(offset);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.floor(n);
 }
 
 function baseQuery(
@@ -95,7 +122,9 @@ function baseQuery(
 }
 
 function sanitizeKeyword(keyword: string): string {
-  return keyword.replace(/[%\\,{}\"]/g, "").trim().slice(0, 80);
+  // Strip PostgREST OR-filter reserved chars (%,(),:,;,{},",\,*,etc.) so the
+  // keyword can't break the or() filter syntax.
+  return keyword.replace(/[%\\,{}\".()|:;*!<>~]/g, "").trim().slice(0, 80);
 }
 
 export async function listJobs(
@@ -103,10 +132,10 @@ export async function listJobs(
   opts?: { excludePhone?: string | null },
   client?: SupabaseClient,
 ): Promise<JobPage> {
-  if (dataSourceOverride) return dataSourceOverride.listJobs(offset, opts);
+  if (dataSourceOverride) return dataSourceOverride.listJobs(normalizeOffset(offset), opts);
   const { data, error } = await baseQuery(
     client ?? getJobsClient(),
-    Math.max(0, offset),
+    normalizeOffset(offset),
     opts,
   );
   if (error) throw new Error("Job list query failed", { cause: error });
@@ -115,13 +144,13 @@ export async function listJobs(
 
 export async function searchJobs(
   keyword: string,
-  offset: string | number,
+  offset: number,
   opts?: { excludePhone?: string | null },
   client?: SupabaseClient,
 ): Promise<JobPage> {
   const clean = sanitizeKeyword(keyword);
-  const start = Math.max(0, Number(offset) || 0);
-  if (dataSourceOverride) return dataSourceOverride.searchJobs(keyword, start, opts);
+  const start = normalizeOffset(offset);
+  if (dataSourceOverride) return dataSourceOverride.searchJobs(clean, start, opts);
   if (!clean) return { jobs: [], hasMore: false };
   const pattern = `%${clean}%`;
   const textOnly = `title.ilike.${pattern},description.ilike.${pattern}`;
@@ -130,6 +159,7 @@ export async function searchJobs(
     baseQuery(client ?? getJobsClient(), start, opts).or(orFilter);
   const first = await run(withSkills);
   if (!first.error) return toPage((first.data ?? []) as JobRow[]);
+  console.warn("[jobs] skills-array search rejected, falling back to text search:", first.error.message ?? first.error);
   // Array-operator inside OR can be rejected on some PostgREST versions;
   // fall back to text fields only rather than failing the menu.
   const retry = await run(textOnly);
@@ -144,6 +174,9 @@ export async function getJobById(
   client?: SupabaseClient,
 ): Promise<JobListing | null> {
   if (dataSourceOverride) return dataSourceOverride.getJobById(id);
+  if (!id || typeof id !== "string" || id.length > 64) {
+    throw new Error("getJobById requires a valid id");
+  }
   const { data, error } = await (client ?? getJobsClient())
     .from("jobs")
     .select(
@@ -169,7 +202,14 @@ export async function createJob(
 ): Promise<JobListing> {
   if (dataSourceOverride?.createJob)
     return dataSourceOverride.createJob(input);
-  const { data, error } = await (client ?? getJobsClient())
+  if (!input.title?.trim() || !input.description?.trim() || !input.area?.trim()) {
+    throw new Error("createJob requires non-empty title, description, and area");
+  }
+  if (!Number.isFinite(input.budget) || input.budget < 0) {
+    throw new Error("createJob requires budget >= 0");
+  }
+  // Server-side write: service-role bypasses RLS (anon reads stay policy-gated).
+  const { data, error } = await (client ?? getJobsServiceClient())
     .from("jobs")
     .insert({
       title: input.title,

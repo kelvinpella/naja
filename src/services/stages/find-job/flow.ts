@@ -56,9 +56,15 @@ export const FIND_JOB_SEARCH_FLOW_JSON = {
 export function getFindJobSearchFlowId(): string | undefined {
   return (
     process.env["ZERNIO_FIND_JOB_FLOW_ID"] ??
-    process.env["ZERNIO_TAFUTA_FLOW_ID"]
+    process.env["ZERNIO_TAFUTA_FLOW_ID"] ??
+    process.env["ZERNIO_FLOW_ID"]
   );
 }
+
+const MAX_FLOW_VERSION_RETRIES = 5;
+
+type FlowLogger = { warn: (...args: unknown[]) => void };
+const defaultFlowLogger: FlowLogger = { warn: (...args: unknown[]) => console.warn(...args) };
 
 export type FindJobSearchResult = {
   keyword?: unknown;
@@ -91,28 +97,42 @@ export async function createFindJobSearchDraftFlow(
   const listFlowsByName = async (
     name: string,
   ): Promise<{ id?: string; name?: string; status?: string }[]> => {
-    const { data, error } = await zernio.whatsappflows.listWhatsAppFlows({
-      query: { accountId },
-      signal,
-    });
-    if (error || !data?.flows) return [];
-    return data.flows.filter(
-      (flow: { name?: string }) => flow.name === name,
-    );
+    try {
+      const { data, error } = await zernio.whatsappflows.listWhatsAppFlows({
+        query: { accountId },
+        signal,
+      });
+      if (error) {
+        defaultFlowLogger.warn(`[find-job-flow] listWhatsAppFlows failed:`, error);
+        return [];
+      }
+      if (!data?.flows) return [];
+      return data.flows.filter(
+        (flow: { name?: string }) => flow.name === name,
+      );
+    } catch (error) {
+      defaultFlowLogger.warn(`[find-job-flow] listWhatsAppFlows threw:`, error);
+      return [];
+    }
   };
 
   const createWithName = async (
     name: string,
   ): Promise<{ flowId: string } | undefined> => {
-    const { data, error } = await zernio.whatsappflows.createWhatsAppFlow({
-      body: {
-        accountId,
-        name,
-        categories: [...FIND_JOB_SEARCH_FLOW_CATEGORIES],
-      },
-      signal,
-    });
-    if (!error && data?.flow?.id) return { flowId: data.flow.id };
+    try {
+      const { data, error } = await zernio.whatsappflows.createWhatsAppFlow({
+        body: {
+          accountId,
+          name,
+          categories: [...FIND_JOB_SEARCH_FLOW_CATEGORIES],
+        },
+        signal,
+      });
+      if (!error && data?.flow?.id) return { flowId: data.flow.id };
+    } catch (error) {
+      // Name taken (4016019) surfaces as thrown _ZernioApiError — fall through to reuse/version.
+      defaultFlowLogger.warn(`[find-job-flow] createWhatsAppFlow failed for ${name}:`, error instanceof Error ? error.message : error);
+    }
     return undefined;
   };
 
@@ -131,14 +151,14 @@ export async function createFindJobSearchDraftFlow(
     return { flowId: draft.id, reused: true };
   }
 
-  for (let version = 2; version <= 5; version += 1) {
+  for (let version = 2; version <= MAX_FLOW_VERSION_RETRIES; version += 1) {
     const versioned = `${FIND_JOB_SEARCH_FLOW_NAME}_v${version}`;
     const alreadyTaken = (await listFlowsByName(versioned)).length > 0;
     if (alreadyTaken) continue;
     const retry = await createWithName(versioned);
     if (retry) {
       await uploadJson(retry.flowId);
-      console.warn(
+      defaultFlowLogger.warn(
         `[find-job-flow] Name ${FIND_JOB_SEARCH_FLOW_NAME} taken (status: ${existing.map((flow) => flow.status).join(",") || "unknown"}), created ${versioned} instead.`,
       );
       return { flowId: retry.flowId, reused: false };
@@ -154,8 +174,10 @@ export function parseFindJobSearchResponse(
   responseData: unknown,
 ): FindJobSearchResult {
   const record =
-    typeof responseData === "object" && responseData !== null
+    typeof responseData === "object" && responseData !== null && !Array.isArray(responseData)
       ? (responseData as Record<string, unknown>)
       : {};
-  return { keyword: record["keyword"], raw: responseData };
+  const rawKeyword = record["keyword"];
+  const keyword = typeof rawKeyword === "string" ? rawKeyword.trim() : rawKeyword;
+  return { keyword: typeof keyword === "string" && keyword ? keyword : undefined, raw: responseData };
 }

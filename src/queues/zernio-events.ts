@@ -36,17 +36,33 @@ export type WhatsappIncomingMessageDeadLetterJob = {
 };
 
 export function zernioEventJobId(eventId: string): string {
+  if (!eventId?.trim()) {
+    throw new Error("zernioEventJobId requires a non-empty eventId");
+  }
   return `zernio-${createHash("sha256").update(eventId).digest("hex")}`;
 }
 
 export async function enqueueWhatsappIncomingMessage(
   queue: Queue<WhatsappIncomingMessageJob>,
   job: WhatsappIncomingMessageJob,
-): Promise<void> {
+): Promise<{ deduplicated: boolean }> {
+  if (!job.eventId?.trim()) {
+    throw new Error("enqueueWhatsappIncomingMessage requires non-empty eventId");
+  }
+  if (!job.personKey?.trim()) {
+    throw new Error("enqueueWhatsappIncomingMessage requires non-empty personKey");
+  }
+  const jobId = zernioEventJobId(job.eventId);
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    return { deduplicated: true };
+  }
   const enqueuePromise = queue.add("incoming-message", job, {
     ...ZERNIO_QUEUE_JOB_OPTIONS,
-    jobId: zernioEventJobId(job.eventId),
+    jobId,
   });
+  // Avoid dangling rejection if timeout wins the race.
+  enqueuePromise.catch(() => undefined);
 
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -62,4 +78,5 @@ export async function enqueueWhatsappIncomingMessage(
   } finally {
     if (timeout) clearTimeout(timeout);
   }
+  return { deduplicated: false };
 }

@@ -10,4 +10,4 @@ export {
   parsePostJobResponse,
 } from "./flow.js";
 export type { PostJobSubmit, PostJobFlowMedia } from "./flow.js";
-export { JOB_IMAGES_BUCKET } from "../../jobs/job-image-storage.js";
+// NOTE: import JOB_IMAGES_BUCKET directly from ../../jobs/job-image-storage.js.

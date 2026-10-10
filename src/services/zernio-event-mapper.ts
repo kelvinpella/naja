@@ -7,7 +7,8 @@ export function toWhatsappMessageJob(
 ): WhatsappIncomingMessageJob | null {
   const sender = payload.message?.sender;
   const phoneNumber = sender?.phoneNumber?.replace(/\D/g, "") ?? "";
-  const senderIdentity = sender?.businessScopedUserId ?? (phoneNumber || sender?.id);
+  // Prefer stable phone number — businessScopedUserId can rotate and orphan state.
+  const senderIdentity = phoneNumber || sender?.businessScopedUserId || sender?.id;
   const accountId = payload.account?.accountId;
   const conversationId = payload.conversation?.id;
   const eventId = payload.id;
@@ -27,16 +28,24 @@ export function toWhatsappMessageJob(
   const buttonPayload = payload.metadata?.buttonPayload;
   const interactiveType = payload.metadata?.interactiveType;
   const flowResponseData = payload.metadata?.flowResponseData;
-  const flowResponseJson = payload.metadata?.flowResponseJson;
+  let flowResponseJson = payload.metadata?.flowResponseJson;
 
-  // Carousel quick-reply taps arrive as buttonPayload, menu buttons as
-  // interactiveId. Prefer interactiveId when both are present.
+  // Cap unbounded flow JSON in job data (Redis memory).
+  if (typeof flowResponseJson === "string" && flowResponseJson.length > 20_000) {
+    flowResponseJson = flowResponseJson.slice(0, 20_000);
+  }
+
+  // Both can be present: interactiveId (menu) + buttonPayload (carousel).
+  // Prefer buttonPayload when it carries a job/more route, else interactiveId.
   const tapId =
-    typeof interactiveId === "string"
-      ? interactiveId
-      : typeof buttonPayload === "string"
-        ? buttonPayload
-        : undefined;
+    typeof buttonPayload === "string" && buttonPayload.length > 0 &&
+    (/^(job_detail|job_apply|more):/.test(buttonPayload) || typeof interactiveId !== "string")
+      ? buttonPayload
+      : typeof interactiveId === "string"
+        ? interactiveId
+        : typeof buttonPayload === "string"
+          ? buttonPayload
+          : undefined;
 
   return {
     eventId,
@@ -53,6 +62,9 @@ export function toWhatsappMessageJob(
         : undefined,
     flowResponseJson:
       typeof flowResponseJson === "string" ? flowResponseJson : undefined,
-    standby: payload.metadata?.standby === true,
+    standby:
+      payload.metadata?.standby === true ||
+      payload.metadata?.standby === "true" ||
+      payload.metadata?.standby === 1,
   };
 }

@@ -8,11 +8,13 @@ export const FIND_JOB_MESSAGE: StageMessage = {
   body: [
     "*Maelezo*",
     "",
-    "1. Bofya *Andika jina la kazi* kama wahitaji kutafuta(search) kwa kuandika jina la kazi unayoitaka",
+    "1. Bofya *Andika jina la kazi* kama unahitaji kutafuta kwa kuandika jina la kazi unayoitaka.",
     "",
-    "2. Bofya *Kazi mpya mchanganyiko* kama wahitaji kuona kazi mchanganyiko zote zilizotangazwa hivi karibuni.",
+    // Body keeps the full "Kazi mpya mchanganyiko" phrase; the button is shortened
+    // to "Kazi mchanganyiko" for Meta's 20-char reply-button limit. Routing is payload-only.
+    "2. Bofya *Kazi mpya mchanganyiko* kama unahitaji kuona kazi mchanganyiko zote zilizotangazwa hivi karibuni.",
     "",
-    "3. Bofya *Rudi nyuma* kama wahitaji kurudi kwenye menyu kuu.",
+    "3. Bofya *Rudi nyuma* kama unahitaji kurudi kwenye menyu kuu.",
   ].join("\n"),
   imageUrl: FIND_JOB_BANNER_URL,
   imageType: "image",

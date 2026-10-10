@@ -1,6 +1,10 @@
 import type { StageMessage } from "../stage-types.js";
 import { BACK_BUTTON } from "../stage-types.js";
 
+export const TERMS_BANNER_URL =
+  process.env["NAJA_TERMS_BANNER_URL"] ??
+  "https://res.cloudinary.com/dpw2dpthx/image/upload/v1791504314/image_20261009_030328_pi1ncm.jpg";
+
 export const TERMS_MESSAGE: StageMessage = {
   body: [
     "*Vigezo na Masharti ya Naja*",
@@ -21,13 +25,12 @@ export const TERMS_MESSAGE: StageMessage = {
     "",
     "7. Admin anaweza kufuta tangazo na kumzuia mkiukaji.",
     "",
-    "8. Ripoti ukiukaji kwa kujibu ujumbe huu.",
+    "8. Ukiona ukiukaji, tuma ujumbe mpya hapa ukieleza tatizo (majibu ya ujumbe huu hufungua menyu upya).",
     "",
     "Ukiendelea kutumia Naja, unakubali vigezo hivi.",
   ].join("\n"),
   // Verified 2026-10-09: 200 + image/jpeg, 53KB.
-  imageUrl:
-    "https://res.cloudinary.com/dpw2dpthx/image/upload/v1791504314/image_20261009_030328_pi1ncm.jpg",
+  imageUrl: TERMS_BANNER_URL,
   imageType: "image",
   buttons: [BACK_BUTTON],
 };

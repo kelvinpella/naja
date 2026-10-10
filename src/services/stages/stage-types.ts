@@ -1,3 +1,6 @@
+// Stage IDs mix Swahili menu slugs (get_started/tafuta/tangaza/vigezo) with
+// English dynamic routes (job_detail/job_apply). Kept intentionally: payloads
+// on the wire already use these strings — renaming would orphan old card taps.
 export type StageId =
   | "get_started"
   | "tafuta_kazi"
@@ -17,7 +20,7 @@ export type StageButton = {
 export type StageFlow = {
   cta: string;
   screen: string;
-  mode: "draft";
+  mode: "draft" | "published";
 };
 
 export type StageMessage = {
@@ -28,8 +31,12 @@ export type StageMessage = {
   flow?: StageFlow;
 };
 
-export const BACK_BUTTON: StageButton = {
+export const BACK_BUTTON: StageButton = Object.freeze({
   type: "postback",
   title: "Rudi nyuma",
   payload: "get_started",
-};
+}) as StageButton;
+
+export function flowMode(): "draft" | "published" {
+  return process.env["ZERNIO_FLOW_MODE"] === "published" ? "published" : "draft";
+}

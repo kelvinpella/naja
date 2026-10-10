@@ -6,13 +6,22 @@ export async function connectRedis(
 ): Promise<Redis> {
   const redis = new Redis(redisUrl, {
     maxRetriesPerRequest: null,
-    enableReadyCheck: false,
+    enableReadyCheck: true,
+  });
+  redis.on("error", (err) => {
+    // Prevent unhandled 'error' throws; BullMQ/workers log contextually.
+    // Console used here to avoid logger dependency at connection layer.
+    console.error("Redis connection error:", err);
   });
   let timeout: ReturnType<typeof setTimeout> | undefined;
 
+  const ping = redis.ping();
+  // Avoid dangling rejection if timeout wins the race.
+  ping.catch(() => undefined);
+
   try {
     await Promise.race([
-      redis.ping(),
+      ping,
       new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(
           () => reject(new Error("Redis connection timed out")),

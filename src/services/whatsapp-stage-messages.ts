@@ -5,16 +5,38 @@ import { getFindJobSearchFlowId } from "./stages/find-job/flow.js";
 import { getPostJobFlowId } from "./stages/post-job/flow.js";
 import type { CarouselCard } from "./jobs/job-carousel.js";
 
+const zernioClients = new Map<string, Zernio>();
+function getZernio(apiKey: string): Zernio {
+  let client = zernioClients.get(apiKey);
+  if (!client) {
+    client = new Zernio({ apiKey });
+    zernioClients.set(apiKey, client);
+  }
+  return client;
+}
+
+type WarnLogger = { warn: (...args: unknown[]) => void };
+function warnLog(logger: WarnLogger | undefined, ...args: unknown[]): void {
+  if (logger) logger.warn(...args);
+  else console.warn(...args);
+}
+
+function truncateTitle(title: string, max = 20): string {
+  return Array.from(title).slice(0, max).join("");
+}
+
 export async function sendStageMessage(
   stage: StageId,
   job: WhatsappIncomingMessageJob,
   apiKey: string,
   idempotencyKey: string,
   signal: AbortSignal,
-  opts?: { prefill?: Record<string, unknown> },
+  opts?: { prefill?: Record<string, unknown>; logger?: WarnLogger },
 ): Promise<void> {
   const definition = STAGE_MESSAGES[stage];
-  const zernio = new Zernio({ apiKey });
+  const zernio = getZernio(apiKey);
+  // Flow token is conversation-scoped (Meta ≤200 chars), not the idempotency key.
+  const flowToken = `naja-${job.conversationId}-${stage}`.slice(0, 200);
 
   if (definition.flow) {
     const flowId =
@@ -34,7 +56,7 @@ export async function sendStageMessage(
               action: {
                 name: "flow",
                 parameters: {
-                  flow_token: idempotencyKey.slice(0, 200),
+                  flow_token: flowToken,
                   flow_id: flowId,
                   flow_cta: definition.flow.cta,
                   flow_action: "navigate",
@@ -63,7 +85,8 @@ export async function sendStageMessage(
         // working; the failure is still logged upstream via the thrown job
         // error path. Re-throw only if fallback also fails below.
         // Log redacted cause, then continue to buttons fallback.
-        console.warn(
+        warnLog(
+          opts?.logger,
           `[whatsapp-stage-messages] Flow send failed for stage ${stage}, falling back to buttons:`,
           error instanceof Error ? error.message : error,
         );
@@ -72,7 +95,7 @@ export async function sendStageMessage(
     // No flow configured (testing without a DRAFT): fall through to buttons.
   }
 
-  const sendButtons = async (withImage: boolean): Promise<void> => {
+  const sendButtons = async (withImage: boolean, key: string): Promise<void> => {
     const { error } = await zernio.messages.sendInboxMessage({
       path: { conversationId: job.conversationId },
       body: {
@@ -86,7 +109,7 @@ export async function sendStageMessage(
           : {}),
         buttons: definition.buttons,
       },
-      headers: { "Idempotency-Key": idempotencyKey },
+      headers: { "Idempotency-Key": key },
       signal,
     });
 
@@ -96,20 +119,22 @@ export async function sendStageMessage(
   };
 
   if (!definition.imageUrl) {
-    await sendButtons(false);
+    // Distinct key from the Flow attempt above — same payload type, different channel.
+    await sendButtons(false, `${idempotencyKey}:fallback`);
     return;
   }
 
   // A dead banner must never brick the menu: on image failure (bad URL,
   // unreachable host) fall back to the text-only message.
   try {
-    await sendButtons(true);
+    await sendButtons(true, idempotencyKey);
   } catch (error) {
-    console.warn(
+    warnLog(
+      opts?.logger,
       `[whatsapp-stage-messages] Image send failed for stage ${stage}, falling back to text-only:`,
       error instanceof Error ? error.message : error,
     );
-    await sendButtons(false);
+    await sendButtons(false, `${idempotencyKey}:noimg`);
   }
 }
 
@@ -121,7 +146,7 @@ export async function sendJobCarousel(
   idempotencyKey: string,
   signal: AbortSignal,
 ): Promise<void> {
-  const zernio = new Zernio({ apiKey });
+  const zernio = getZernio(apiKey);
   const { error } = await zernio.messages.sendInboxMessage({
     path: { conversationId: job.conversationId },
     body: {
@@ -132,6 +157,7 @@ export async function sendJobCarousel(
         body: { text: heading },
         action: {
           cards: cards.map((card, index) => ({
+            // Meta carousel card_index is 0-based.
             card_index: index,
             type: "cta_url",
             header: { type: "image", image: { link: card.imageUrl } },
@@ -139,7 +165,7 @@ export async function sendJobCarousel(
             action: {
               buttons: card.buttons.map((button) => ({
                 type: "quick_reply",
-                quick_reply: { id: button.id, title: button.title },
+                quick_reply: { id: button.id, title: truncateTitle(button.title) },
               })),
             },
           })),
@@ -164,18 +190,27 @@ export async function sendJobText(
   signal: AbortSignal,
   opts?: { imageUrl?: string; imageType?: "image" | "video" | "audio" | "file" },
 ): Promise<void> {
-  const zernio = new Zernio({ apiKey });
+  const zernio = getZernio(apiKey);
+  let imageUrl: string | undefined;
+  if (opts?.imageUrl) {
+    try {
+      const parsed = new URL(opts.imageUrl);
+      if (parsed.protocol === "https:" && parsed.hostname) imageUrl = opts.imageUrl;
+    } catch {
+      imageUrl = undefined;
+    }
+  }
   const { error } = await zernio.messages.sendInboxMessage({
     path: { conversationId: job.conversationId },
-    body: {
-      accountId: job.accountId,
-      message: body,
-      ...(opts?.imageUrl
-        ? {
-            attachmentUrl: opts.imageUrl,
-            attachmentType: opts.imageType ?? "image",
-          }
-        : {}),
+      body: {
+        accountId: job.accountId,
+        message: body,
+        ...(imageUrl
+          ? {
+              attachmentUrl: imageUrl,
+              attachmentType: opts?.imageType ?? "image",
+            }
+          : {}),
       // No buttons: plain text message (e.g. terminal confirmations after
       // state is cleared, where a tap would have nowhere to resume to).
       ...(buttons.length > 0

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Job } from "bullmq";
 import type { FastifyBaseLogger } from "fastify";
 import type { Redis } from "ioredis";
@@ -24,7 +24,8 @@ const RELEASE_LOCK_SCRIPT = `
 `;
 
 function personLockKey(personKey: string): string {
-  return `naja:zernio-event-lock:${personKey}`;
+  const hashed = createHash("sha256").update(personKey).digest("hex");
+  return `naja:zernio-event-lock:${hashed}`;
 }
 
 function wait(milliseconds: number, signal: AbortSignal): Promise<void> {
@@ -60,10 +61,22 @@ async function withPersonLock(
   let renewal: ReturnType<typeof setInterval> | undefined;
 
   try {
+    const start = Date.now();
+    let attempt = 0;
     while (
       (await redis.set(key, token, "PX", PERSON_LOCK_TTL_MS, "NX")) !== "OK"
     ) {
-      await wait(100, controller.signal);
+      controller.signal.throwIfAborted();
+      const elapsed = Date.now() - start;
+      if (elapsed > PROCESSING_TIMEOUT_MS) {
+        throw new Error("Timed out waiting for Zernio sender lock");
+      }
+      // Jittered exponential backoff: 100,200,400... capped at 1s.
+      const backoff = Math.min(100 * 2 ** attempt, 1000);
+      const jitter = Math.random() * 100;
+      attempt += 1;
+      logger.warn({ personLock: key, attempt }, "Sender lock contended, backing off");
+      await wait(backoff + jitter, controller.signal);
     }
     lockAcquired = true;
 
@@ -80,6 +93,8 @@ async function withPersonLock(
     renewal.unref();
 
     await run(controller.signal);
+    // run() may ignore the signal — enforce it before releasing the lock.
+    controller.signal.throwIfAborted();
   } finally {
     clearTimeout(timeout);
     if (renewal) clearInterval(renewal);
@@ -106,7 +121,15 @@ export function createZernioEventProcessor({
   logger,
 }: ZernioEventProcessorOptions) {
   return async (job: Job<WhatsappIncomingMessageJob>): Promise<void> => {
-    await withPersonLock(redis, job.data.personKey, logger, (signal) =>
+    const personKey = job.data?.personKey;
+    const eventId = job.data?.eventId;
+    if (typeof personKey !== "string" || personKey.trim().length === 0) {
+      throw new Error("WhatsApp job missing personKey");
+    }
+    if (typeof eventId !== "string" || eventId.trim().length === 0) {
+      throw new Error("WhatsApp job missing eventId");
+    }
+    await withPersonLock(redis, personKey, logger, (signal) =>
       processWhatsappMessage(job.data, redis, zernioApiKey, logger, signal),
     );
   };

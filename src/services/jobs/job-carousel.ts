@@ -1,9 +1,11 @@
 import type { JobListing, JobPage } from "./job-types.js";
 
 export const JOB_CARD_IMAGE_URL =
+  process.env["NAJA_JOB_CARD_IMAGE_URL"] ??
   "https://res.cloudinary.com/dpw2dpthx/image/upload/v1791342164/kazi_mpya_kvncsh.jpg";
 
 export const MORE_CARD_IMAGE_URL =
+  process.env["NAJA_MORE_CARD_IMAGE_URL"] ??
   "https://res.cloudinary.com/dpw2dpthx/image/upload/v1791499669/gallery_image_20261007_060131-replace-text-with-tizama-kazi-zaidi-at-slightly-sm_yroyqr.jpg";
 
 export const JOB_DETAIL_PREFIX = "job_detail";
@@ -30,38 +32,40 @@ export type JobListView =
   | { kind: "carousel"; heading: string; cards: CarouselCard[] };
 
 export function excerpt(description: string | null, limit = 150): string {
+  if (limit <= 0) return "";
   const text = (description ?? "").trim();
   if (text.length <= limit) return text;
-  return `${text.slice(0, limit)}...`;
+  return `${Array.from(text).slice(0, limit).join("")}...`;
 }
 
 const CARD_BODY_LIMIT = 155;
 
 export function fitTitle(title: string | null, limit = 50): string {
   const text = (title?.trim() || "Kazi").replace(/\n+/g, " ");
-  if (text.length <= limit) return text;
-  return `${text.slice(0, limit - 3)}...`;
+  if (Array.from(text).length <= limit) return text;
+  return `${Array.from(text).slice(0, Math.max(0, limit - 3)).join("")}...`;
 }
 
 export function fitArea(area: string | null | undefined, limit = 30): string {
   const text = (area ?? "").trim().replace(/\n+/g, " ");
   if (!text) return "";
-  if (text.length <= limit) return text;
-  return `${text.slice(0, limit - 3)}...`;
+  if (Array.from(text).length <= limit) return text;
+  return `${Array.from(text).slice(0, Math.max(0, limit - 3)).join("")}...`;
 }
 
 export function formatPostedDate(createdAt: string): string {
   const time = new Date(createdAt).getTime();
   if (Number.isNaN(time)) return "";
   const date = new Date(time);
-  const day = String(date.getDate()).padStart(2, "0");
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const year = String(date.getFullYear()).slice(-2);
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const year = String(date.getUTCFullYear()).slice(-2);
   return `${day}/${month}/${year}`;
 }
 
 export function formatAmount(budget: number): string {
-  return `Tsh: ${budget.toLocaleString("en-US")}`;
+  if (!Number.isFinite(budget) || budget < 0) return "Tsh: —";
+  return `Tsh: ${Math.floor(budget).toLocaleString("en-US")}`;
 }
 
 export function cardBody(job: JobListing): string {
@@ -127,8 +131,10 @@ export function parseJobPayload(
   payload: string | undefined,
 ): { stage: "detail"; jobId: string } | { stage: "apply"; jobId: string } | null {
   if (!payload) return null;
-  const [prefix, jobId] = payload.split(":");
-  if (!jobId) return null;
+  const parts = payload.split(":");
+  if (parts.length !== 2) return null;
+  const [prefix, jobId] = parts;
+  if (!jobId || !/^[A-Za-z0-9-]{1,64}$/.test(jobId)) return null;
   if (prefix === JOB_DETAIL_PREFIX) return { stage: "detail", jobId };
   if (prefix === JOB_APPLY_PREFIX) return { stage: "apply", jobId };
   return null;
@@ -158,9 +164,21 @@ export function parseMorePayload(payload: string | undefined): MoreCursor {
   return null;
 }
 
+function safeImageUrl(url: string | null | undefined, fallback: string): string {
+  if (!url) return fallback;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") return fallback;
+    if (!parsed.hostname) return fallback;
+    return url;
+  } catch {
+    return fallback;
+  }
+}
+
 function jobCard(job: JobListing): CarouselCard {
   return {
-    imageUrl: job.jobImage ?? JOB_CARD_IMAGE_URL,
+    imageUrl: safeImageUrl(job.jobImage, JOB_CARD_IMAGE_URL),
     body: cardBody(job),
     buttons: [
       { id: detailPayload(job.id), title: DETAIL_BUTTON_TITLE },
@@ -200,7 +218,10 @@ export function buildJobListView(
 }
 
 export function applyConfirmationBody(phone: string): string {
-  return `✅ Waweza wasiliana na aliyetangaza hii kazi kwa namba hizi hapa chini.\n\nPhone:${phone.trim()}`;
+  // Full number is intentional: the user tapped Omba to request the poster's contact.
+  const clean = phone.trim();
+  if (!clean) return "✅ Ombi limepokelewa. Tutakujulisha hatua zinazofuata.";
+  return `✅ Waweza wasiliana na aliyetangaza hii kazi kwa namba hizi hapa chini.\n\nPhone:${clean}`;
 }
 
 export function searchHeading(keyword: string): string {

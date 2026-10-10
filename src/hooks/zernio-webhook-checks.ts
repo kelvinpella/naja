@@ -7,24 +7,27 @@ import {
 export async function checkZernioWebhook(
   request: FastifyRequest<{ Body: ParsedZernioWebhookBody }>,
   reply: FastifyReply,
-): Promise<void> {
+): Promise<FastifyReply | void> {
   const secret = process.env.ZERNIO_WEBHOOK_SECRET;
   if (!secret) {
     request.log.error("ZERNIO_WEBHOOK_SECRET is not configured");
-    reply.code(500).send({ error: "Webhook is not configured" });
-    return;
+    return reply.code(500).send({ error: "Webhook is not configured" });
+  }
+
+  const rawBody = request.body?.rawBody;
+  if (!rawBody || rawBody.length === 0) {
+    return reply.code(400).send({ error: "Missing webhook body" });
   }
 
   const signature = request.headers["x-zernio-signature"];
   if (
     !isValidZernioSignature(
-      request.body.rawBody,
+      rawBody,
       typeof signature === "string" ? signature : undefined,
       secret,
     )
   ) {
-    reply.code(401).send({ error: "Invalid webhook signature" });
-    return;
+    return reply.code(401).send({ error: "Invalid webhook signature" });
   }
 
   const { payload } = request.body;
@@ -32,6 +35,6 @@ export async function checkZernioWebhook(
     payload.event !== "message.received" ||
     payload.account?.platform !== "whatsapp"
   ) {
-    reply.code(200).send({ received: true, ignored: true });
+    return reply.code(200).send({ received: true, ignored: true });
   }
 }

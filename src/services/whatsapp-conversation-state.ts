@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Redis } from "ioredis";
-import type { StageId } from "./whatsapp-stages.js";
+import { isStageId, type StageId } from "./whatsapp-stages.js";
 
 const STATE_TTL_SECONDS = 7 * 24 * 60 * 60;
 
@@ -53,23 +53,40 @@ export async function loadConversationState(
   const value = await redis.get(key);
   if (!value) return null;
 
+  let parsed: ConversationState;
   try {
-    const parsed = JSON.parse(value) as ConversationState;
+    parsed = JSON.parse(value) as ConversationState;
+  } catch {
+    // Corrupt JSON would otherwise brick the conversation for 7 days — drop it.
+    await redis.del(key).catch(() => undefined);
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.responses)) {
+    await redis.del(key).catch(() => undefined);
+    return null;
+  }
+  const legacyComplete = (parsed.stage as string) === "get_started_complete";
+  if (!legacyComplete && !isStageId(parsed.stage)) {
+    await redis.del(key).catch(() => undefined);
+    return null;
+  }
+  {
     // Migrate pre-stage-map records where completion was a terminal marker.
     if (
       (parsed.stage as string) === "get_started_complete" &&
       parsed.responses.length > 0
     ) {
       const last = parsed.responses[parsed.responses.length - 1];
+      const lastResponse = typeof last?.response === "string" ? last.response : "";
       if (
-        last.response === "Tafuta kazi" ||
-        last.response === "tafuta_kazi"
+        lastResponse === "Tafuta kazi" ||
+        lastResponse === "tafuta_kazi"
       ) {
         return { ...parsed, stage: "tafuta_kazi" };
       }
       if (
-        last.response === "Tangaza kazi" ||
-        last.response === "tangaza_kazi"
+        lastResponse === "Tangaza kazi" ||
+        lastResponse === "tangaza_kazi"
       ) {
         return { ...parsed, stage: "tangaza_kazi" };
       }
@@ -79,8 +96,6 @@ export async function loadConversationState(
       return { ...parsed, stage: "get_started" };
     }
     return parsed;
-  } catch {
-    return null;
   }
 }
 

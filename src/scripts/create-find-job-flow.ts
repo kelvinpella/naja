@@ -9,12 +9,12 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const { flowId } = await createFindJobSearchDraftFlow(accountId, apiKey);
-  console.log(`Created DRAFT Flow ${flowId}. Set ZERNIO_FIND_JOB_FLOW_ID=${flowId} to test sending with draft:true.`);
+  const { flowId, reused } = await createFindJobSearchDraftFlow(accountId, apiKey);
+  console.log(`${reused ? "Reused" : "Created"} DRAFT Flow ${flowId}. Set ZERNIO_FIND_JOB_FLOW_ID=${flowId} to test sending with draft:true.`);
   console.log("Do not publish — this Flow stays DRAFT for testing.");
 }
 
 void main().catch((error: unknown) => {
   console.error("Failed to create DRAFT Flow:", error);
-  process.exitCode = 1;
+  process.exit(1);
 });

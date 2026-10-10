@@ -24,7 +24,7 @@ export type ZernioWebhookPayload = {
     buttonPayload?: string;
     flowResponseData?: Record<string, unknown>;
     flowResponseJson?: string;
-    standby?: boolean;
+    standby?: boolean | string | number;
     [key: string]: unknown;
   } | null;
 };
@@ -35,9 +35,18 @@ export type ParsedZernioWebhookBody = {
 };
 
 export function parseZernioWebhookBody(rawBody: Buffer): ParsedZernioWebhookBody {
+  let payload: ZernioWebhookPayload;
+  try {
+    payload = JSON.parse(rawBody.toString("utf8")) as ZernioWebhookPayload;
+  } catch (error) {
+    throw new Error("Invalid Zernio webhook JSON", { cause: error });
+  }
+  if (!payload || typeof payload !== "object") {
+    throw new Error("Invalid Zernio webhook payload");
+  }
   return {
     rawBody,
-    payload: JSON.parse(rawBody.toString("utf8")) as ZernioWebhookPayload,
+    payload,
   };
 }
 
@@ -46,7 +55,7 @@ export function isValidZernioSignature(
   signature: string | undefined,
   secret: string,
 ): boolean {
-  if (!signature || !/^[a-f0-9]{64}$/.test(signature)) {
+  if (!signature || !/^[a-f0-9]{64}$/i.test(signature)) {
     return false;
   }
 

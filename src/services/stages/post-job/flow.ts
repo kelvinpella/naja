@@ -49,7 +49,7 @@ export const POST_JOB_FLOW_JSON = {
                 required: true,
                 name: "title",
                 ["input-type"]: "text",
-                ["max-chars"]: 80,
+                ["max-length"]: 80,
                 ["helper-text"]: "Mpishi wa pilau anahitajika",
               },
               {
@@ -66,16 +66,16 @@ export const POST_JOB_FLOW_JSON = {
                 required: true,
                 name: "area",
                 ["input-type"]: "text",
-                ["max-chars"]: 80,
+                ["max-length"]: 80,
                 ["helper-text"]: "Mfano: Mbezi, Dar es Salaam",
               },
               {
                 type: "TextInput",
-                label: "Bajeti(Tsh)",
+                label: "Bajeti (TSh)",
                 required: true,
                 name: "budget",
                 ["input-type"]: "number",
-                ["helper-text"]: "Mfano: 50000",
+                ["helper-text"]: "Andika namba kubwa kuliko 0, mfano 50000",
               },
               {
                 type: "Footer",
@@ -133,7 +133,7 @@ export const POST_JOB_FLOW_JSON = {
                 type: "PhotoPicker",
                 name: "job_image",
                 label: "Weka picha ya kazi",
-                description: "Mfano: picha ya eneo la kusafishwa. Ukiona picha .HEIC, badili. Weka JPG/PNG",
+                description: "Hiari: chagua picha moja kutoka kamera au albamu. Tumia picha ya kawaida (JPG au PNG).",
                 ["photo-source"]: "camera_gallery",
                 ["max-file-size-kb"]: 5120,
                 ["min-uploaded-photos"]: 0,
@@ -162,7 +162,11 @@ export const POST_JOB_FLOW_JSON = {
 };
 
 export function getPostJobFlowId(): string | undefined {
-  return process.env["ZERNIO_TANGAZA_FLOW_ID"];
+  return (
+    process.env["ZERNIO_TANGAZA_FLOW_ID"] ??
+    process.env["ZERNIO_POST_JOB_FLOW_ID"] ??
+    process.env["ZERNIO_FLOW_ID"]
+  );
 }
 
 export type PostJobFlowMedia = {
@@ -187,6 +191,26 @@ export type PostJobSubmit = {
 // Never calls publish — stays DRAFT for testing.
 // Reuses the existing DRAFT with the same name if Meta reports
 // "Flow name is not unique" (error_subcode 4016019).
+function isNameTakenError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return true;
+  const record = error as Record<string, unknown>;
+  const subcodes = [
+    record["error_subcode"],
+    record["subcode"],
+    (record["cause"] as Record<string, unknown> | undefined)?.["error_subcode"],
+    (record["cause"] as Record<string, undefined> | undefined)?.["subcode"],
+  ];
+  const message = typeof record["message"] === "string" ? record["message"] : "";
+  if (subcodes.includes(4016019) || subcodes.includes("4016019")) return true;
+  // Fallback: SDK may only expose the message text.
+  if (/not unique|4016019/i.test(message)) return true;
+  // Unknown shape — assume name-taken to preserve legacy fallthrough? No:
+  // return false so auth/net errors surface instead of being swallowed.
+  return false;
+}
+
+type PostJobFlowLogger = { warn: (...args: unknown[]) => void };
+const postJobFlowLogger: PostJobFlowLogger = { warn: (...args: unknown[]) => console.warn(...args) };
 export async function createPostJobDraftFlow(
   accountId: string,
   apiKey: string,
@@ -232,9 +256,19 @@ export async function createPostJobDraftFlow(
         signal,
       });
       if (!error && data?.flow?.id) return { flowId: data.flow.id };
-    } catch {
-      // Name taken (4016019) surfaces as a thrown _ZernioApiError here —
-      // fall through to DRAFT reuse / versioned-name retry below.
+      // API returned an error payload — only name-taken (4016019) falls through
+      // to reuse/versioning; anything else is rethrown to surface auth/net issues.
+      const subcode = (error as { error_subcode?: unknown; subcode?: unknown } | null)?.error_subcode ??
+        (error as { subcode?: unknown } | null)?.subcode;
+      if (subcode !== undefined && subcode !== 4016019 && subcode !== "4016019") {
+        throw new Error("Zernio flow creation failed", { cause: error });
+      }
+    } catch (error) {
+      if (isNameTakenError(error)) {
+        // Name taken (4016019) — fall through to DRAFT reuse / versioned-name retry below.
+      } else {
+        throw error instanceof Error ? error : new Error("Zernio flow creation failed", { cause: error });
+      }
     }
     return undefined;
   };
@@ -259,7 +293,7 @@ export async function createPostJobDraftFlow(
     const retry = await createWithName(versioned);
     if (retry) {
       await uploadJson(retry.flowId);
-      console.warn(
+      postJobFlowLogger.warn(
         `[post-job-flow] Name ${POST_JOB_FLOW_NAME} taken (status: ${existing.map((flow) => flow.status).join(",") || "unknown"}), created ${versioned} instead.`,
       );
       return { flowId: retry.flowId, reused: false };
@@ -273,14 +307,16 @@ export async function createPostJobDraftFlow(
 
 export function parsePostJobResponse(responseData: unknown): PostJobSubmit {
   const record =
-    typeof responseData === "object" && responseData !== null
+    typeof responseData === "object" && responseData !== null && !Array.isArray(responseData)
       ? (responseData as Record<string, unknown>)
       : {};
+  const trimString = (value: unknown): unknown =>
+    typeof value === "string" ? value.trim() : value;
   return {
-    title: record["title"],
-    description: record["description"],
-    area: record["area"],
-    budget: record["budget"],
+    title: trimString(record["title"]),
+    description: trimString(record["description"]),
+    area: trimString(record["area"]),
+    budget: trimString(record["budget"]),
     job_image: record["job_image"],
     raw: responseData,
   };
