@@ -25,13 +25,18 @@ export async function processWhatsappMessage(
     return;
   }
 
-  await sendTypingIndicator(
+  // Best-effort typing runs unawaited alongside everything below: every
+  // reply used to pay a full send round trip before doing any useful
+  // work. Started first so the bubble usually still arrives first.
+  // Failures are logged inside; the catch guards the abort rethrow
+  // (aborts surface through the main path itself).
+  void sendTypingIndicator(
     job.conversationId,
     job.accountId,
     apiKey,
     logger,
     signal,
-  );
+  ).catch(() => {});
 
   signal.throwIfAborted();
   const key = conversationKey(job.personKey, job.accountId);

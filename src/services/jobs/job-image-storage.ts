@@ -1,11 +1,42 @@
 import { randomBytes } from "node:crypto";
 import convert from "heic-convert";
+import sharp from "sharp";
 import { getJobsClient } from "./supabase-client.js";
 import { getZernioClient } from "../zernio-client.js";
 import type { PostJobFlowMedia } from "../stages/post-job/flow.js";
 
 export const JOB_IMAGES_BUCKET = "job_images";
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+// Card photos display small, but phones upload full resolution (a 1MB+
+// photo makes every carousel send pay the download). Fit uploads inside
+// a 1280 box here so every saved photo is cheap for Meta to fetch.
+export const WEB_IMAGE_MAX_DIMENSION = 1280;
+
+export async function downscaleToWebSize(
+  bytes: Uint8Array<ArrayBuffer>,
+  contentType: string,
+): Promise<Uint8Array<ArrayBuffer>> {
+  const image = sharp(bytes);
+  const meta = await image.metadata();
+  if (
+    (meta.width ?? 0) <= WEB_IMAGE_MAX_DIMENSION &&
+    (meta.height ?? 0) <= WEB_IMAGE_MAX_DIMENSION
+  )
+    return bytes;
+  const resized = image.resize({
+    width: WEB_IMAGE_MAX_DIMENSION,
+    height: WEB_IMAGE_MAX_DIMENSION,
+    fit: "inside",
+    withoutEnlargement: true,
+  });
+  const out =
+    contentType === "image/png"
+      ? await resized.png().toBuffer()
+      : await resized.jpeg({ quality: 75 }).toBuffer();
+  const copy = new Uint8Array(out.byteLength);
+  copy.set(out);
+  return copy;
+}
 // PhotoPicker (camera_gallery) accepts whatever the OS gallery holds —
 // iPhones default to HEIC. Anything that isn't already JPEG/PNG is
 // converted to JPEG here so every format works and only jpg/png lands in
@@ -105,6 +136,7 @@ export async function uploadPostJobImage(
   if (bytes.length > MAX_IMAGE_BYTES) {
     throw new Error("Image exceeds 5MB limit");
   }
+  bytes = await downscaleToWebSize(bytes, contentType);
   const ext = contentType === "image/png" ? "png" : "jpg";
   const folder = folderFor(opts.userPhone, opts.personKey);
   const unique = `${Date.now()}_${randomBytes(4).toString("hex")}`;

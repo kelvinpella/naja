@@ -10,6 +10,7 @@ import type {
 } from "../../src/services/whatsapp-conversation-state.js";
 import { handleStagedConversation } from "../../src/services/whatsapp-staged-conversation.js";
 import { processWhatsappMessage } from "../../src/services/whatsapp-conversation.js";
+import { conversationKey } from "../../src/services/whatsapp-conversation-state.js";
 import type { WhatsappIncomingMessageJob } from "../../src/queues/zernio-events.js";
 
 const EXPECTED_STAGES: ConversationStage[] = [
@@ -421,6 +422,45 @@ describe("handleStagedConversation transitions", () => {
       ) as string,
     ) as ConversationState;
     assert.equal(saved.stage, "job_detail");
+  });
+
+  it("does not wait for the typing indicator before doing handler work", async () => {
+    const redis = makeRedis();
+    redis.store.set(
+      conversationKey("person-1", "acct-1"),
+      JSON.stringify(makeState({ stage: "tafuta_kazi_mixed" })),
+    );
+    let releaseTyping!: (value: Response) => void;
+    const typingGate = new Promise<Response>((resolve) => {
+      releaseTyping = resolve;
+    });
+    const ok = () =>
+      new Response(JSON.stringify({ success: true, data: {} }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      if (calls === 1) return typingGate;
+      return ok();
+    }) as typeof fetch;
+
+    const pending = processWhatsappMessage(
+      makeJob({ eventId: "evt-typing", interactiveId: "tafuta_kazi_mixed" }),
+      redis as never,
+      "key",
+      silentLogger,
+      AbortSignal.timeout(5000),
+    );
+    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+    assert.ok(
+      calls >= 2,
+      `handler fetch attempted while typing pending, got ${calls} call(s)`,
+    );
+    releaseTyping(ok());
+    await pending;
+    assert.ok(calls >= 2);
   });
 
   it("tapping Soma zaidi sends the full job description", async () => {
