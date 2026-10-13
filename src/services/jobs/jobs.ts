@@ -21,10 +21,37 @@ import {
   uploadPostJobImage,
 } from "./job-image-storage.js";
 import type { JobListing, JobPage } from "./job-types.js";
+import {
+  connectJobsTimingToLogger,
+  resetJobsTimingSink,
+  setJobsTimingSink,
+  timeJobRead,
+  type JobsTimingRecord,
+  type JobsTimingSink,
+} from "./job-timing.js";
+import {
+  JOB_DETAIL_CACHE_TTL_SECONDS,
+  JOB_LIST_CACHE_TTL_SECONDS,
+  jobDetailCacheKey,
+  jobListCacheKey,
+  purgeJobListCopies,
+  readCached,
+  resetJobsCache,
+  setJobsCacheRedis,
+  writeCached,
+} from "./job-cache.js";
 import type { E164Phone } from "../phone.js";
 
 export type { JobListing, JobPage, JobListView, ListOrigin };
 export { parseJobPayload, parseMorePayload };
+export {
+  connectJobsTimingToLogger,
+  resetJobsTimingSink,
+  setJobsTimingSink,
+  type JobsTimingRecord,
+  type JobsTimingSink,
+};
+export { resetJobsCache, setJobsCacheRedis };
 
 export type CreateJobInput = {
   title: string;
@@ -47,15 +74,39 @@ export async function listJobs(
   offset: number,
   opts?: { excludePhone?: string | null },
 ): Promise<JobPage> {
-  return repoListJobs(offset, opts);
+  return timeJobRead(
+    "list",
+    (page) => page.jobs.length,
+    async () => {
+      const key = jobListCacheKey(offset, opts?.excludePhone);
+      const hit = await readCached<JobPage>(key);
+      if (hit) return hit;
+      const page = await repoListJobs(offset, opts);
+      await writeCached(key, page, JOB_LIST_CACHE_TTL_SECONDS);
+      return page;
+    },
+  );
 }
 
 export async function getJobById(id: string): Promise<JobListing | null> {
-  return repoGetJobById(id);
+  return timeJobRead(
+    "get-by-id",
+    (job) => (job ? 1 : 0),
+    async () => {
+      const key = jobDetailCacheKey(id);
+      const hit = await readCached<JobListing | null>(key);
+      if (hit !== null) return hit;
+      const job = await repoGetJobById(id);
+      if (job !== null) await writeCached(key, job, JOB_DETAIL_CACHE_TTL_SECONDS);
+      return job;
+    },
+  );
 }
 
 export async function createJob(input: CreateJobInput): Promise<JobListing> {
-  return repoCreateJob(input);
+  const created = await repoCreateJob(input);
+  await purgeJobListCopies();
+  return created;
 }
 
 export function renderView(

@@ -10,10 +10,13 @@ import {
   zernioEventJobId,
 } from "./queues/zernio-events.js";
 import { createZernioEventProcessor } from "./workers/zernio-events.js";
+import { connectJobsTimingToLogger } from "./services/jobs/job-timing.js";
+import { listJobs, setJobsCacheRedis } from "./services/jobs/jobs.js";
 
 async function startWorker(): Promise<void> {
   const loggerHost = Fastify({ logger: true });
   const logger = loggerHost.log;
+  connectJobsTimingToLogger(logger);
   const zernioApiKey = process.env.ZERNIO_API_KEY;
   if (!zernioApiKey) {
     throw new Error("ZERNIO_API_KEY is required for WhatsApp replies");
@@ -22,6 +25,15 @@ async function startWorker(): Promise<void> {
   const redis = await connectRedis(
     process.env.REDIS_URL ?? "redis://127.0.0.1:6379",
   );
+  setJobsCacheRedis(redis);
+  // Prime the database connection and the first list page so the
+  // first real reply skips cold-start setup. Best effort: a cold
+  // Supabase at boot must not stop the worker.
+  try {
+    await listJobs(0);
+  } catch (error) {
+    logger.warn({ err: error }, "Job list warmup failed, continuing cold");
+  }
   const deadLetterQueue = new Queue<WhatsappIncomingMessageDeadLetterJob>(
     WHATSAPP_INCOMING_MESSAGES_DEAD_LETTER_QUEUE,
     {

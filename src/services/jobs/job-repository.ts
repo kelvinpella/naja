@@ -61,9 +61,24 @@ function toListing(row: JobRow): JobListing {
   };
 }
 
+// Cards render at most a 150-char excerpt, so list pages carry
+// descriptions capped at 200 chars (card maximum plus headroom, so
+// visible cards never change). Full text stays on the
+// single-job read (getJobById maps rows without this cap).
+export const LIST_DESCRIPTION_CAP = 200;
+
 function toPage(rows: JobRow[]): JobPage {
   const hasMore = rows.length > JOB_PAGE_SIZE;
-  return { jobs: rows.slice(0, JOB_PAGE_SIZE).map(toListing), hasMore };
+  return {
+    jobs: rows.slice(0, JOB_PAGE_SIZE).map((row) => {
+      const job = toListing(row);
+      if (job.description && job.description.length > LIST_DESCRIPTION_CAP) {
+        return { ...job, description: job.description.slice(0, LIST_DESCRIPTION_CAP) };
+      }
+      return job;
+    }),
+    hasMore,
+  };
 }
 
 function normalizeExcludePhone(opts?: { excludePhone?: string | null }): string {
