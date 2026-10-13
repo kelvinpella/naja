@@ -39,10 +39,37 @@ export function stageIdempotencyKey(
   stage: ConversationStage,
   eventId: string,
 ): string {
-  if (stage === "get_started") {
+  return idempotencyKeyFor(stage, eventId);
+}
+
+// Stable scheme (Q6): one function owns every purpose suffix so call sites
+// pass a fixed purpose instead of ad-hoc string interpolation.
+// Stable scheme (Q6): fixed purposes, no ad-hoc interpolation at call
+// sites. Dynamic ids (job id, offset) travel in `scope`, composed here.
+export type IdempotencyPurpose =
+  | "send"
+  | "empty"
+  | "single"
+  | "page"
+  | "invalid"
+  | "resend"
+  | "created"
+  | "error"
+  | "missing";
+
+export function idempotencyKeyFor(
+  stage: ConversationStage,
+  eventId: string,
+  purpose: IdempotencyPurpose = "send",
+  scope?: string,
+): string {
+  if (stage === "get_started" && purpose === "send" && !scope) {
     return getStartedIdempotencyKey(eventId);
   }
-  const eventHash = createHash("sha256").update(eventId).digest("hex");
+  const suffix = scope ? `${purpose}:${scope}` : purpose;
+  const eventHash = createHash("sha256")
+    .update(`${eventId}:${suffix}`)
+    .digest("hex");
   return `naja-${stage}-${eventHash}`;
 }
 
@@ -54,34 +81,33 @@ export async function loadConversationState(
   if (!value) return null;
 
   try {
-    const parsed = JSON.parse(value) as ConversationState;
-    // Migrate pre-stage-map records where completion was a terminal marker.
-    if (
-      (parsed.stage as string) === "get_started_complete" &&
-      parsed.responses.length > 0
-    ) {
-      const last = parsed.responses[parsed.responses.length - 1];
-      if (
-        last.response === "Tafuta kazi" ||
-        last.response === "tafuta_kazi"
-      ) {
-        return { ...parsed, stage: "tafuta_kazi" };
-      }
-      if (
-        last.response === "Tangaza kazi" ||
-        last.response === "tangaza_kazi"
-      ) {
-        return { ...parsed, stage: "tangaza_kazi" };
-      }
-      return { ...parsed, stage: "get_started" };
-    }
-    if ((parsed.stage as string) === "get_started_complete") {
-      return { ...parsed, stage: "get_started" };
-    }
-    return parsed;
+    return JSON.parse(value) as ConversationState;
   } catch {
     return null;
   }
+}
+
+// Stateless entry: old card buttons keep working after state was cleared
+// (Omba close, Tangaza close, terms close alike) — job taps are
+// self-contained (id / offset travel in the tap), so entry starts mid-flow.
+export function statelessJobTapState(
+  eventId: string,
+): ConversationState {
+  return {
+    stage: "tafuta_kazi",
+    promptSent: true,
+    promptEventId: eventId,
+    responses: [],
+  };
+}
+
+// Stateless entry: a Stage tap always enters the requested stage, even with
+// no stored state. Plain text (no tap) still starts get-started.
+export function statelessStageState(
+  stage: ConversationStage,
+  eventId: string,
+): ConversationState {
+  return { stage, promptSent: true, promptEventId: eventId, responses: [] };
 }
 
 export async function saveConversationState(

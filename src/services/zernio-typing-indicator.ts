@@ -1,5 +1,5 @@
-import { Zernio } from "@zernio/node";
 import type { FastifyBaseLogger } from "fastify";
+import { getZernioClient } from "./zernio-client.js";
 
 export async function sendTypingIndicator(
   conversationId: string,
@@ -8,7 +8,7 @@ export async function sendTypingIndicator(
   logger: FastifyBaseLogger,
   signal: AbortSignal,
 ): Promise<void> {
-  const zernio = new Zernio({ apiKey });
+  const zernio = getZernioClient(apiKey);
 
   try {
     const { data, error } = await zernio.messages.sendTypingIndicator({

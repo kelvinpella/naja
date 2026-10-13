@@ -4,11 +4,13 @@ import type { WhatsappIncomingMessageJob } from "../queues/zernio-events.js";
 import {
   conversationKey,
   loadConversationState,
+  statelessJobTapState,
+  statelessStageState,
 } from "./whatsapp-conversation-state.js";
 import { handleNewConversation } from "./whatsapp-new-conversation.js";
 import { handleStagedConversation } from "./whatsapp-staged-conversation.js";
 import { isStageId } from "./whatsapp-stages.js";
-import { parseJobPayload, parseMorePayload } from "./jobs/job-carousel.js";
+import { parseJobPayload, parseMorePayload } from "./jobs/jobs.js";
 import { sendTypingIndicator } from "./zernio-typing-indicator.js";
 
 export async function processWhatsappMessage(
@@ -55,12 +57,7 @@ export async function processWhatsappMessage(
       logger,
       signal,
       key,
-      state: {
-        stage: "tafuta_kazi",
-        promptSent: true,
-        promptEventId: job.eventId,
-        responses: [],
-      },
+      state: statelessJobTapState(job.eventId),
     });
       return;
     }
@@ -79,12 +76,7 @@ export async function processWhatsappMessage(
         logger,
         signal,
         key,
-        state: {
-          stage: job.interactiveId,
-          promptSent: true,
-          promptEventId: job.eventId,
-          responses: [],
-        },
+        state: statelessStageState(job.interactiveId, job.eventId),
       });
       return;
     }

@@ -15,6 +15,8 @@ export type {
 } from "./stages/stage-types.js";
 export { BACK_BUTTON } from "./stages/stage-types.js";
 import type { StageId, StageMessage } from "./stages/stage-types.js";
+import { getFindJobSearchFlowId } from "./stages/find-job/flow.js";
+import { getPostJobFlowId } from "./stages/post-job/flow.js";
 
 export const STAGE_MESSAGES: Record<StageId, StageMessage> = {
   get_started: GET_STARTED_MESSAGE,
@@ -27,17 +29,17 @@ export const STAGE_MESSAGES: Record<StageId, StageMessage> = {
   job_apply: JOB_APPLY_MESSAGE,
 };
 
-const STAGE_IDS: ReadonlySet<string> = new Set([
-  "get_started",
-  "tafuta_kazi",
-  "tafuta_kazi_search",
-  "tafuta_kazi_mixed",
-  "tangaza_kazi",
-  "vigezo_na_masharti",
-  "job_detail",
-  "job_apply",
-]);
-
 export function isStageId(value: string | undefined): value is StageId {
-  return typeof value === "string" && STAGE_IDS.has(value);
+  return typeof value === "string" && value in STAGE_MESSAGES;
+}
+
+// Which Stages carry a Flow, and where its id comes from. Adding a third
+// Flow stage is one row here — the send adapter asks the Stage.
+const STAGE_FLOW_IDS: Partial<Record<StageId, () => string | undefined>> = {
+  tafuta_kazi_search: getFindJobSearchFlowId,
+  tangaza_kazi: getPostJobFlowId,
+};
+
+export function getStageFlowId(stage: StageId): string | undefined {
+  return STAGE_FLOW_IDS[stage]?.();
 }
