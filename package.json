@@ -7,7 +7,7 @@
     "dev": "sh scripts/dev.sh",
     "dev:app": "node --env-file-if-exists=.env --import tsx --watch src/app.ts",
     "dev:worker": "node --env-file-if-exists=.env --import tsx --watch src/worker.ts",
-    "dev:ngrok": "/tmp/ngrok-darwin-arm64/ngrok http 3000",
+    "dev:ngrok": "ngrok http 3000",
     "dev:redis": "redis-server --dir /tmp",
     "redis:clear": "node --env-file-if-exists=.env --import tsx src/scripts/clear-redis.ts",
     "flow:create-find-job": "node --env-file-if-exists=.env --import tsx src/scripts/create-find-job-flow.ts",
