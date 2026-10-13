@@ -65,12 +65,16 @@ function toPage(rows: JobRow[]): JobPage {
   return { jobs: rows.slice(0, JOB_PAGE_SIZE).map(toListing), hasMore };
 }
 
+function normalizeExcludePhone(opts?: { excludePhone?: string | null }): string {
+  return (opts?.excludePhone ?? "").replace(/\D/g, "");
+}
+
 function baseQuery(
   client: SupabaseClient,
   offset: number,
   opts?: { excludePhone?: string | null },
 ) {
-  const digits = (opts?.excludePhone ?? "").replace(/\D/g, "");
+  const digits = normalizeExcludePhone(opts);
   let query = client
     .from("jobs")
     .select(
@@ -95,7 +99,9 @@ function baseQuery(
 }
 
 function sanitizeKeyword(keyword: string): string {
-  return keyword.replace(/[%\\,{}\"]/g, "").trim().slice(0, 80);
+  // Strip PostgREST filter-structural chars (parens/quotes break .or()
+  // parsing on the legacy path) plus LIKE wildcards before anything else.
+  return keyword.replace(/[%\\,{}"()']/g, "").trim().slice(0, 80);
 }
 
 export async function listJobs(
@@ -121,13 +127,27 @@ export async function searchJobs(
 ): Promise<JobPage> {
   const clean = sanitizeKeyword(keyword);
   const start = Math.max(0, Number(offset) || 0);
-  if (dataSourceOverride) return dataSourceOverride.searchJobs(keyword, start, opts);
   if (!clean) return { jobs: [], hasMore: false };
+  // Test seam runs after guards so fakes observe the same cleaned input
+  // and empty-keyword contract as the live paths (issue #23).
+  if (dataSourceOverride) return dataSourceOverride.searchJobs(clean, start, opts);
+  const supabase = client ?? getJobsClient();
+  const digits = normalizeExcludePhone(opts);
+  // Ranked path (issue #21): single rpc preserving the reviewed gate, phone
+  // exclusion, and offset paging. Falls back to legacy text match when the
+  // migration has not been applied yet (PostgREST PGRST202).
+  const ranked = await supabase.rpc("search_jobs", {
+    p_keyword: clean,
+    p_exclude_phone: digits || null,
+    p_offset: start,
+    p_limit: JOB_FETCH_SIZE,
+  });
+  if (!ranked.error) return toPage((ranked.data ?? []) as JobRow[]);
   const pattern = `%${clean}%`;
-  const textOnly = `title.ilike.${pattern},description.ilike.${pattern}`;
+  const textOnly = `title.ilike.${pattern},description.ilike.${pattern},area.ilike.${pattern}`;
   const withSkills = `${textOnly},skills.cs.{${clean}}`;
   const run = async (orFilter: string) =>
-    baseQuery(client ?? getJobsClient(), start, opts).or(orFilter);
+    baseQuery(supabase, start, opts).or(orFilter);
   const first = await run(withSkills);
   if (!first.error) return toPage((first.data ?? []) as JobRow[]);
   // Array-operator inside OR can be rejected on some PostgREST versions;
