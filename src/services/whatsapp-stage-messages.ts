@@ -1,9 +1,22 @@
-import { Zernio } from "@zernio/node";
+import type { FastifyBaseLogger } from "fastify";
 import type { WhatsappIncomingMessageJob } from "../queues/zernio-events.js";
-import { STAGE_MESSAGES, type StageId } from "./whatsapp-stages.js";
-import { getFindJobSearchFlowId } from "./stages/find-job/flow.js";
-import { getPostJobFlowId } from "./stages/post-job/flow.js";
+import { STAGE_MESSAGES, getStageFlowId, type StageId } from "./whatsapp-stages.js";
+import { getZernioClient } from "./zernio-client.js";
 import type { CarouselCard } from "./jobs/job-carousel.js";
+
+export type StageSendResult = {
+  sentAs: "flow" | "buttons" | "text";
+};
+
+export type CarouselSendResult = {
+  sentAs: "carousel";
+};
+
+export type TextSendResult = {
+  sentAs: "buttons" | "text";
+};
+
+type Logger = Pick<FastifyBaseLogger, "warn" | "info">;
 
 export async function sendStageMessage(
   stage: StageId,
@@ -11,16 +24,22 @@ export async function sendStageMessage(
   apiKey: string,
   idempotencyKey: string,
   signal: AbortSignal,
-  opts?: { prefill?: Record<string, unknown> },
-): Promise<void> {
+  opts?: { prefill?: Record<string, unknown>; logger?: Logger },
+): Promise<StageSendResult> {
   const definition = STAGE_MESSAGES[stage];
-  const zernio = new Zernio({ apiKey });
+  const zernio = getZernioClient(apiKey);
+  const warn = (message: string, cause: unknown): void => {
+    const target = opts?.logger?.warn;
+    // Test fakes only stub info/error: fall back to console when warn is absent.
+    if (typeof target === "function") {
+      Reflect.apply(target, opts?.logger, [{ err: cause, stage }, message]);
+    } else {
+      console.warn(`[whatsapp-stage-messages] ${message}`, cause);
+    }
+  };
 
   if (definition.flow) {
-    const flowId =
-      stage === "tangaza_kazi"
-        ? getPostJobFlowId()
-        : getFindJobSearchFlowId();
+    const flowId = getStageFlowId(stage);
     if (flowId) {
       try {
         const { error } = await zernio.messages.sendInboxMessage({
@@ -56,17 +75,13 @@ export async function sendStageMessage(
         if (error) {
           throw new Error("Zernio flow message send failed", { cause: error });
         }
-        return;
+        return { sentAs: "flow" };
       } catch (error) {
         // Flow sends depend on WABA/Flow health (e.g. Meta 139000 Blocked by
         // Integrity). Fall back to the plain Stage message so the menu keeps
         // working; the failure is still logged upstream via the thrown job
         // error path. Re-throw only if fallback also fails below.
-        // Log redacted cause, then continue to buttons fallback.
-        console.warn(
-          `[whatsapp-stage-messages] Flow send failed for stage ${stage}, falling back to buttons:`,
-          error instanceof Error ? error.message : error,
-        );
+        warn(`Flow send failed for stage ${stage}, falling back to buttons`, error);
       }
     }
     // No flow configured (testing without a DRAFT): fall through to buttons.
@@ -97,19 +112,18 @@ export async function sendStageMessage(
 
   if (!definition.imageUrl) {
     await sendButtons(false);
-    return;
+    return { sentAs: "buttons" };
   }
 
   // A dead banner must never brick the menu: on image failure (bad URL,
   // unreachable host) fall back to the text-only message.
   try {
     await sendButtons(true);
+    return { sentAs: "buttons" };
   } catch (error) {
-    console.warn(
-      `[whatsapp-stage-messages] Image send failed for stage ${stage}, falling back to text-only:`,
-      error instanceof Error ? error.message : error,
-    );
+    warn(`Image send failed for stage ${stage}, falling back to text-only`, error);
     await sendButtons(false);
+    return { sentAs: "text" };
   }
 }
 
@@ -120,8 +134,8 @@ export async function sendJobCarousel(
   apiKey: string,
   idempotencyKey: string,
   signal: AbortSignal,
-): Promise<void> {
-  const zernio = new Zernio({ apiKey });
+): Promise<CarouselSendResult> {
+  const zernio = getZernioClient(apiKey);
   const { error } = await zernio.messages.sendInboxMessage({
     path: { conversationId: job.conversationId },
     body: {
@@ -153,6 +167,7 @@ export async function sendJobCarousel(
   if (error) {
     throw new Error("Zernio carousel send failed", { cause: error });
   }
+  return { sentAs: "carousel" };
 }
 
 export async function sendJobText(
@@ -163,8 +178,8 @@ export async function sendJobText(
   idempotencyKey: string,
   signal: AbortSignal,
   opts?: { imageUrl?: string; imageType?: "image" | "video" | "audio" | "file" },
-): Promise<void> {
-  const zernio = new Zernio({ apiKey });
+): Promise<TextSendResult> {
+  const zernio = getZernioClient(apiKey);
   const { error } = await zernio.messages.sendInboxMessage({
     path: { conversationId: job.conversationId },
     body: {
@@ -194,4 +209,5 @@ export async function sendJobText(
   if (error) {
     throw new Error("Zernio message send failed", { cause: error });
   }
+  return { sentAs: buttons.length > 0 ? "buttons" : "text" };
 }

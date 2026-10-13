@@ -1,9 +1,12 @@
+// Thin router over the deep conversation modules: find-Job, post-Job,
+// job-browse. Owns only prompt-send, generic Stage moves, and free-text
+// replay of plain Stages; every Job transition lives behind its own seam.
 import type { FastifyBaseLogger } from "fastify";
 import type { Redis } from "ioredis";
 import type { WhatsappIncomingMessageJob } from "../queues/zernio-events.js";
 import {
-  saveConversationState,
   clearConversationState,
+  saveConversationState,
   stageIdempotencyKey,
   type ConversationState,
 } from "./whatsapp-conversation-state.js";
@@ -11,47 +14,19 @@ import {
   STAGE_MESSAGES,
   isStageId,
 } from "./whatsapp-stages.js";
+import { sendStageMessage } from "./whatsapp-stage-messages.js";
+import { parseJobPayload, parseMorePayload } from "./jobs/jobs.js";
 import {
-  sendJobCarousel,
-  sendJobText,
-  sendStageMessage,
-} from "./whatsapp-stage-messages.js";
-import { parseFindJobSearchResponse } from "./stages/find-job/flow.js";
+  handleFindJobSubmit,
+  handleMixedEntry,
+  handlePagination,
+} from "./conversation/find-job-handler.js";
+import { handlePostJobSubmit } from "./conversation/post-job-handler.js";
 import {
-  parsePostJobResponse,
-  type PostJobSubmit,
-} from "./stages/post-job/flow.js";
-import {
-  deletePostJobImage,
-  normalizePostJobMedia,
-  uploadPostJobImage,
-} from "./jobs/job-image-storage.js";
-import {
-  createJob,
-  getJobById,
-  listJobs,
-  searchJobs,
-} from "./jobs/job-repository.js";
-import {
-  APPLY_BUTTON_TITLE,
-  DETAIL_BUTTON_TITLE,
-  EMPTY_MIXED_BODY,
-  JOB_CARD_IMAGE_URL,
-  MORE_BATCH_HEADING,
-  MIXED_HEADING,
-  applyConfirmationBody,
-  applyPayload,
-  buildJobListView,
-  detailPayload,
-  emptySearchBody,
-  fullDetailBody,
-  parseJobPayload,
-  fitTitle,
-  parseMorePayload,
-  searchHeading,
-  type ListOrigin,
-} from "./jobs/job-carousel.js";
-import type { JobPage } from "./jobs/job-types.js";
+  handleJobReplay,
+  handleJobRoute,
+} from "./conversation/job-browse-handler.js";
+import { pushResponse } from "./conversation/handler-context.js";
 
 export type StagedConversationContext = {
   job: WhatsappIncomingMessageJob;
@@ -76,230 +51,6 @@ function responseLabel(stage: ConversationState["stage"]): string {
   if (stage === "job_detail") return "Soma zaidi";
   if (stage === "job_apply") return "Omba";
   return "Vigezo na Masharti";
-}
-
-function now(): string {
-  return new Date().toISOString();
-}
-
-async function pushResponse(
-  redis: Redis,
-  key: string,
-  state: ConversationState,
-  entry: { stage: ConversationState["stage"]; response: string; eventId: string },
-): Promise<void> {
-  state.responses.push({ ...entry, receivedAt: now() });
-  await saveConversationState(redis, key, state);
-}
-
-async function sendJobPage(
-  page: JobPage,
-  origin: ListOrigin,
-  offset: number,
-  heading: string,
-  emptyBody: string,
-  ctx: StagedConversationContext,
-  eventId: string,
-): Promise<void> {
-  const { job, apiKey, logger, signal } = ctx;
-  const view = buildJobListView(page, origin, offset, heading);
-  if (view.kind === "empty") {
-    await sendJobText(
-      emptyBody,
-      [{ title: "Rudi nyuma", payload: "get_started" }],
-      job,
-      apiKey,
-      stageIdempotencyKey(ctx.state.stage, `${eventId}:empty`),
-      signal,
-    );
-    logger.info({ eventId, origin }, "Sent empty job list message");
-    return;
-  }
-  if (view.kind === "single") {
-    // One job can't form a carousel (Meta requires 2-10 cards), so it goes
-    // out as a reply-buttons message with the same image header the cards
-    // carry, keeping the look consistent across result counts.
-    await sendJobText(
-      fullDetailBody(view.job),
-      [
-        { title: APPLY_BUTTON_TITLE, payload: applyPayload(view.job.id) },
-        { title: "Rudi nyuma", payload: "get_started" },
-      ],
-      job,
-      apiKey,
-      stageIdempotencyKey(ctx.state.stage, `${eventId}:single:${view.job.id}`),
-      signal,
-      { imageUrl: view.job.jobImage ?? JOB_CARD_IMAGE_URL },
-    );
-    ctx.state.selectedJobId = view.job.id;
-    logger.info({ eventId, jobId: view.job.id }, "Sent single job message");
-    return;
-  }
-  await sendJobCarousel(
-    view.heading,
-    view.cards,
-    job,
-    apiKey,
-    stageIdempotencyKey(ctx.state.stage, `${eventId}:page:${offset}`),
-    signal,
-  );
-  logger.info(
-    { eventId, cards: view.cards.length, offset },
-    "Sent job carousel",
-  );
-}
-
-function resolveFlowPayload(raw: unknown): unknown {
-  if (typeof raw !== "string") return raw;
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    if (
-      parsed &&
-      typeof parsed === "object" &&
-      typeof (parsed as Record<string, unknown>)["response_json"] === "object"
-    ) {
-      return (parsed as Record<string, unknown>)["response_json"];
-    }
-    return parsed;
-  } catch {
-    return raw;
-  }
-}
-
-async function handlePostJobSubmit(
-  ctx: StagedConversationContext,
-  raw: unknown,
-): Promise<void> {
-  const { job, apiKey, logger, signal, redis, key, state } = ctx;
-  const submit: PostJobSubmit = parsePostJobResponse(resolveFlowPayload(raw));
-  const title = typeof submit.title === "string" ? submit.title.trim() : "";
-  const description =
-    typeof submit.description === "string" ? submit.description.trim() : "";
-  const area = typeof submit.area === "string" ? submit.area.trim() : "";
-  const budgetRaw =
-    typeof submit.budget === "string" || typeof submit.budget === "number"
-      ? String(submit.budget).trim()
-      : "";
-  const budget = Number(budgetRaw);
-  logger.info(
-    {
-      eventId: job.eventId,
-      stage: state.stage,
-      hasImage: submit.job_image != null,
-      flowResponse: raw,
-    },
-    "Received Tangaza kazi Flow response",
-  );
-
-  const prefill = {
-    init_values: { title, description, area, budget: budgetRaw },
-  };
-  const fail = async (reason: string): Promise<void> => {
-    await sendJobText(
-      reason,
-      [{ title: "Rudi nyuma", payload: "get_started" }],
-      job,
-      apiKey,
-      stageIdempotencyKey(state.stage, `${job.eventId}:invalid`),
-      signal,
-    );
-    signal.throwIfAborted();
-    await sendStageMessage(
-      "tangaza_kazi",
-      job,
-      apiKey,
-      stageIdempotencyKey(state.stage, `${job.eventId}:resend`),
-      signal,
-      { prefill },
-    );
-    signal.throwIfAborted();
-    await saveConversationState(redis, key, state);
-  };
-
-  if (!title || title.length > 80)
-    return fail("Samahani, jina la kazi haliko sahihi (herufi 1-80). Tafadhali jaribu tena.");
-  if (!description || description.length > 500)
-    return fail("Samahani, maelezo hayako sahihi (herufi 1-500). Tafadhali jaribu tena.");
-  if (!area || area.length > 80)
-    return fail("Samahani, eneo haliko sahihi (herufi 1-80). Tafadhali jaribu tena.");
-  if (!budgetRaw || !Number.isFinite(budget) || budget <= 0 || budget > 999999999)
-    return fail("Samahani, bajeti (Tsh) si sahihi. Andika namba, mfano 50000.");
-
-  let jobImage: string | null = null;
-  let jobImagePath: string | null = null;
-  const media = normalizePostJobMedia(submit.job_image);
-  if (media) {
-    try {
-      const uploaded = await uploadPostJobImage(media, {
-        userPhone: job.senderPhone,
-        personKey: job.personKey,
-        accountId: job.accountId,
-        apiKey,
-        signal,
-      });
-      signal.throwIfAborted();
-      jobImage = uploaded.url;
-      jobImagePath = uploaded.path;
-    } catch (error) {
-      logger.error({ err: error, eventId: job.eventId }, "Job image upload failed");
-      return fail("Samahani, imeshindikana kupakia picha (jpg/png, max 5MB). Jaribu tena.");
-    }
-  }
-
-  try {
-    const digits = (job.senderPhone ?? "").replace(/\D/g, "");
-    const created = await createJob({
-      title: title.slice(0, 80),
-      description: description.slice(0, 500),
-      area: area.slice(0, 80),
-      budget: Math.floor(budget),
-      jobImage,
-      // jobs.created_by_phone has an E.164 check constraint: senderPhone
-      // arrives digits-only from the mapper, so re-add the leading +.
-      posterPhone: digits ? `+${digits}` : null,
-    });
-    signal.throwIfAborted();
-    const confirmedTitle = (created.title ?? title).slice(0, 80);
-    // Terminal stage like job_apply: plain-text confirmation with no buttons,
-    // then clear state so the next message starts a fresh get-started menu.
-    await sendJobText(
-      `✅ Tumepokea tangazo lako: *${confirmedTitle}*. Litachapishwa baada ya ukaguzi.`,
-      [],
-      job,
-      apiKey,
-      stageIdempotencyKey("tangaza_kazi", `${job.eventId}:created:${created.id}`),
-      signal,
-    );
-    signal.throwIfAborted();
-    logger.info({ eventId: job.eventId, jobId: created.id }, "Created job posting");
-    await clearConversationState(redis, key);
-    logger.info(
-      { eventId: job.eventId, jobId: created.id },
-      "Cleared conversation state after job posting",
-    );
-  } catch (error) {
-    logger.error({ err: error, eventId: job.eventId }, "Job insert failed");
-    if (jobImagePath) await deletePostJobImage(jobImagePath);
-    await sendJobText(
-      "Samahani, imeshindikana kutangaza kazi. Jaribu tena.",
-      [{ title: "Rudi nyuma", payload: "get_started" }],
-      job,
-      apiKey,
-      stageIdempotencyKey(state.stage, `${job.eventId}:error`),
-      signal,
-    );
-    signal.throwIfAborted();
-    await sendStageMessage(
-      "tangaza_kazi",
-      job,
-      apiKey,
-      stageIdempotencyKey(state.stage, `${job.eventId}:resend`),
-      signal,
-      { prefill },
-    );
-    signal.throwIfAborted();
-    await saveConversationState(redis, key, state);
-  }
 }
 
 export async function handleStagedConversation({
@@ -329,6 +80,7 @@ export async function handleStagedConversation({
       apiKey,
       stageIdempotencyKey(state.stage, state.promptEventId),
       signal,
+      { logger },
     );
     signal.throwIfAborted();
     state.promptSent = true;
@@ -342,79 +94,13 @@ export async function handleStagedConversation({
 
   // Flow submission (nfm_reply): tangaza_kazi posts a job, otherwise search.
   if (job.interactiveType === "nfm_reply") {
-    if (state.stage === "tangaza_kazi") {
-      await handlePostJobSubmit(ctx, job.flowResponseData ?? job.flowResponseJson);
-      return;
-    }
-    const parsed = parseFindJobSearchResponse(
-      job.flowResponseData ?? job.flowResponseJson,
-    );
-    const keyword =
-      typeof parsed.keyword === "string" ? parsed.keyword.trim() : "";
-    logger.info(
-      {
-        eventId: job.eventId,
-        stage: state.stage,
-        keyword,
-        flowResponse: job.flowResponseData ?? job.flowResponseJson,
-      },
-      "Received WhatsApp Flow response",
-    );
-    if (!keyword) {
-      await sendJobText(
-        emptySearchBody(keyword),
-        [{ title: "Rudi nyuma", payload: "get_started" }],
-        job,
-        apiKey,
-        stageIdempotencyKey(state.stage, `${job.eventId}:empty`),
-        signal,
-      );
-      signal.throwIfAborted();
-      await saveConversationState(redis, key, state);
-      return;
-    }
-    try {
-      const page = await searchJobs(keyword, 0, {
-        excludePhone: job.senderPhone,
-      });
-      signal.throwIfAborted();
-      state.listKeyword = keyword;
-      state.listOffset = 0;
-      await sendJobPage(
-        page,
-        { kind: "search", keyword },
-        0,
-        searchHeading(keyword),
-        emptySearchBody(keyword),
-        ctx,
-        job.eventId,
-      );
-      signal.throwIfAborted();
-      state.stage = "tafuta_kazi_search";
-      state.promptSent = true;
-      await pushResponse(redis, key, state, {
-        stage: "tafuta_kazi_search",
-        response: keyword,
-        eventId: job.eventId,
-      });
-      logger.info(
-        { eventId: job.eventId, keyword, results: page.jobs.length },
-        "Sent job search results",
-      );
-    } catch (error) {
-      logger.error(
-        { err: error, eventId: job.eventId, keyword },
-        "Job search failed",
-      );
-      await sendJobText(
-        "Samahani, imeshindikana kupakia kazi. Jaribu tena.",
-        [{ title: "Rudi nyuma", payload: "get_started" }],
-        job,
-        apiKey,
-        stageIdempotencyKey(state.stage, `${job.eventId}:error`),
-        signal,
-      );
-      signal.throwIfAborted();
+    const result =
+      state.stage === "tangaza_kazi"
+        ? await handlePostJobSubmit(ctx)
+        : await handleFindJobSubmit(ctx);
+    if (result.clear) {
+      await clearConversationState(redis, key);
+    } else {
       await saveConversationState(redis, key, state);
     }
     return;
@@ -423,78 +109,11 @@ export async function handleStagedConversation({
   // Dynamic job payloads: Soma zaidi / Omba per job card.
   const jobRoute = parseJobPayload(job.interactiveId);
   if (jobRoute) {
-    try {
-      const listing = await getJobById(jobRoute.jobId);
-      signal.throwIfAborted();
-      if (!listing) {
-        await sendJobText(
-          "Samahani, kazi hiyo haikupatikana.",
-          [{ title: "Rudi nyuma", payload: "get_started" }],
-          job,
-          apiKey,
-          stageIdempotencyKey(state.stage, `${job.eventId}:missing`),
-          signal,
-        );
-        signal.throwIfAborted();
-        await saveConversationState(redis, key, state);
-        return;
-      }
-      if (jobRoute.stage === "detail") {
-        await sendJobText(
-          fullDetailBody(listing),
-          [
-            { title: APPLY_BUTTON_TITLE, payload: applyPayload(listing.id) },
-            { title: "Rudi nyuma", payload: "get_started" },
-          ],
-          job,
-          apiKey,
-          stageIdempotencyKey("job_detail", `${job.eventId}:${listing.id}`),
-          signal,
-          { imageUrl: listing.jobImage ?? JOB_CARD_IMAGE_URL },
-        );
-        signal.throwIfAborted();
-        state.stage = "job_detail";
-        state.promptSent = true;
-        state.selectedJobId = listing.id;
-        await pushResponse(redis, key, state, {
-          stage: "job_detail",
-          response: `${DETAIL_BUTTON_TITLE}: ${listing.title ?? listing.id}`,
-          eventId: job.eventId,
-        });
-        logger.info(
-          { eventId: job.eventId, jobId: listing.id },
-          "Sent job detail",
-        );
-        return;
-      }
-      // Omba ends the stage: share the poster's contact, then clear state so
-      // the next free-text message starts a fresh get-started menu. No
-      // buttons: with state gone a tap would have nowhere to resume to.
-      // Old card buttons keep working statelessly through their payload ids.
-      await sendJobText(
-        applyConfirmationBody(listing.posterPhone ?? ""),
-        [],
-        job,
-        apiKey,
-        stageIdempotencyKey("job_apply", `${job.eventId}:${listing.id}`),
-        signal,
-      );
-      signal.throwIfAborted();
-      logger.info(
-        { eventId: job.eventId, jobId: listing.id, personKey: job.personKey },
-        "Logged job application",
-      );
+    const result = await handleJobRoute(ctx, jobRoute);
+    if (result.clear) {
       await clearConversationState(redis, key);
-      logger.info(
-        { eventId: job.eventId, jobId: listing.id },
-        "Cleared conversation state after job application",
-      );
-    } catch (error) {
-      logger.error(
-        { err: error, eventId: job.eventId },
-        "Job detail/apply handling failed",
-      );
-      throw error;
+    } else {
+      await saveConversationState(redis, key, state);
     }
     return;
   }
@@ -502,46 +121,8 @@ export async function handleStagedConversation({
   // Pagination: Tizama kazi zaidi loads the next batch.
   const more = parseMorePayload(job.interactiveId);
   if (more) {
-    const origin: ListOrigin = more.origin;
-    try {
-      const page =
-        origin.kind === "search"
-          ? await searchJobs(origin.keyword, more.offset, {
-              excludePhone: job.senderPhone,
-            })
-          : await listJobs(more.offset, { excludePhone: job.senderPhone });
-      signal.throwIfAborted();
-      state.listOffset = more.offset;
-      if (origin.kind === "search") state.listKeyword = origin.keyword;
-      await sendJobPage(
-        page,
-        origin,
-        more.offset,
-        MORE_BATCH_HEADING,
-        origin.kind === "search"
-          ? emptySearchBody(origin.keyword)
-          : EMPTY_MIXED_BODY,
-        ctx,
-        job.eventId,
-      );
-      signal.throwIfAborted();
-      state.promptSent = true;
-      await pushResponse(redis, key, state, {
-        stage: state.stage,
-        response: `Tizama kazi zaidi (offset ${more.offset})`,
-        eventId: job.eventId,
-      });
-      logger.info(
-        { eventId: job.eventId, offset: more.offset },
-        "Sent next job batch",
-      );
-    } catch (error) {
-      logger.error(
-        { err: error, eventId: job.eventId },
-        "Job pagination failed",
-      );
-      throw error;
-    }
+    await handlePagination(ctx, more.origin, more.offset);
+    await saveConversationState(redis, key, state);
     return;
   }
 
@@ -550,50 +131,8 @@ export async function handleStagedConversation({
     const target = job.interactiveId;
     // Kazi mchanganyiko entry renders the live job list carousel.
     if (target === "tafuta_kazi_mixed") {
-      try {
-        const page = await listJobs(0, { excludePhone: job.senderPhone });
-        signal.throwIfAborted();
-        state.stage = target;
-        state.promptSent = true;
-        state.listOffset = 0;
-        state.listKeyword = undefined;
-        await sendJobPage(
-          page,
-          { kind: "mixed" },
-          0,
-          MIXED_HEADING,
-          EMPTY_MIXED_BODY,
-          ctx,
-          job.eventId,
-        );
-        signal.throwIfAborted();
-        await pushResponse(redis, key, state, {
-          stage: target,
-          response: responseLabel(target),
-          eventId: job.eventId,
-        });
-        logger.info(
-          { eventId: job.eventId, stage: target, results: page.jobs.length },
-          "Sent mixed job list",
-        );
-      } catch (error) {
-        logger.error(
-          { err: error, eventId: job.eventId },
-          "Mixed job list failed",
-        );
-        await sendJobText(
-          "Samahani, imeshindikana kupakia kazi. Jaribu tena.",
-          [{ title: "Rudi nyuma", payload: "get_started" }],
-          job,
-          apiKey,
-          stageIdempotencyKey(target, `${job.eventId}:error`),
-          signal,
-        );
-        signal.throwIfAborted();
-        state.stage = target;
-        state.promptSent = true;
-        await saveConversationState(redis, key, state);
-      }
+      await handleMixedEntry(ctx);
+      await saveConversationState(redis, key, state);
       return;
     }
     // Terms Stage is terminal like Omba / Tangaza submit: respond with the
@@ -608,6 +147,7 @@ export async function handleStagedConversation({
         apiKey,
         stageIdempotencyKey(target, job.eventId),
         signal,
+        { logger },
       );
       signal.throwIfAborted();
       await clearConversationState(redis, key);
@@ -623,15 +163,15 @@ export async function handleStagedConversation({
       apiKey,
       stageIdempotencyKey(target, job.eventId),
       signal,
+      { logger },
     );
     signal.throwIfAborted();
     state.stage = target;
     state.promptSent = true;
-    state.responses.push({
+    pushResponse(state, {
       stage: target,
       response: responseLabel(target),
       eventId: job.eventId,
-      receivedAt: new Date().toISOString(),
     });
     await saveConversationState(redis, key, state);
     logger.info(
@@ -643,40 +183,10 @@ export async function handleStagedConversation({
 
   // Free text or unknown payload: replay current Stage (7-day resume included).
   // Dynamic job stages re-render from the stored selection.
-  if ((state.stage === "job_detail" || state.stage === "job_apply") && state.selectedJobId) {
-    try {
-      const listing = await getJobById(state.selectedJobId);
-      signal.throwIfAborted();
-      if (listing) {
-        await sendJobText(
-          state.stage === "job_detail"
-            ? fullDetailBody(listing)
-            : `Omba limepokelewa kwa *${fitTitle(listing.title, 80)}*. Tutakujulisha hatua zinazofuata.`,
-          state.stage === "job_detail"
-            ? [
-                { title: APPLY_BUTTON_TITLE, payload: applyPayload(listing.id) },
-                { title: "Rudi nyuma", payload: "get_started" },
-              ]
-            : [{ title: "Rudi nyuma", payload: "get_started" }],
-          job,
-          apiKey,
-          stageIdempotencyKey(state.stage, job.eventId),
-          signal,
-          state.stage === "job_detail"
-            ? { imageUrl: listing.jobImage ?? JOB_CARD_IMAGE_URL }
-            : undefined,
-        );
-        signal.throwIfAborted();
-        await saveConversationState(redis, key, state);
-        logger.info(
-          { eventId: job.eventId, stage: state.stage },
-          "Replayed job stage message",
-        );
-        return;
-      }
-    } catch (error) {
-      logger.error({ err: error, eventId: job.eventId }, "Job replay failed");
-    }
+  const replayed = await handleJobReplay(ctx);
+  if (replayed) {
+    await saveConversationState(redis, key, state);
+    return;
   }
   // Terms Stage is terminal: a lingering saved terms stage replays the T&C
   // once, then clears so the next message starts fresh (same as selection).
@@ -687,6 +197,7 @@ export async function handleStagedConversation({
       apiKey,
       stageIdempotencyKey(state.stage, job.eventId),
       signal,
+      { logger },
     );
     signal.throwIfAborted();
     await clearConversationState(redis, key);
@@ -703,6 +214,7 @@ export async function handleStagedConversation({
     apiKey,
     stageIdempotencyKey(state.stage, job.eventId),
     signal,
+    { logger },
   );
   signal.throwIfAborted();
   await saveConversationState(redis, key, state);

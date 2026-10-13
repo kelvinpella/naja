@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { Zernio } from "@zernio/node";
 import convert from "heic-convert";
 import { getJobsClient } from "./supabase-client.js";
+import { getZernioClient } from "../zernio-client.js";
 import type { PostJobFlowMedia } from "../stages/post-job/flow.js";
 
 export const JOB_IMAGES_BUCKET = "job_images";
@@ -64,7 +64,7 @@ export async function uploadPostJobImage(
   const mediaId =
     typeof rawId === "string" ? rawId : typeof rawId === "number" ? String(rawId) : undefined;
   if (!mediaId) throw new Error("Image media ID missing in Flow response");
-  const zernio = new Zernio({ apiKey: opts.apiKey });
+  const zernio = getZernioClient(opts.apiKey);
   const { data, error } = await zernio.whatsapp.getWhatsAppMedia({
     path: { mediaId },
     query: { accountId: opts.accountId },

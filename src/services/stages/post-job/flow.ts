@@ -1,4 +1,5 @@
-import { Zernio } from "@zernio/node";
+import { unwrapFlowPayload } from "../flow-payload.js";
+import { createDraftFlow } from "../draft-flow.js";
 
 // Draft-only Flow JSON for posting a job (Tangaza kazi).
 // Lifecycle: DRAFT -> upload JSON -> send with draft:true for testing.
@@ -183,91 +184,23 @@ export type PostJobSubmit = {
   raw: unknown;
 };
 
-// Uses official @zernio/node SDK. Creates a DRAFT and uploads JSON.
-// Never calls publish — stays DRAFT for testing.
-// Reuses the existing DRAFT with the same name if Meta reports
-// "Flow name is not unique" (error_subcode 4016019).
+// Uses official @zernio/node SDK via the shared draft helper. Creates a
+// DRAFT and uploads JSON. Never calls publish — stays DRAFT for testing.
 export async function createPostJobDraftFlow(
   accountId: string,
   apiKey: string,
   signal?: AbortSignal,
 ): Promise<{ flowId: string; reused: boolean }> {
-  const zernio = new Zernio({ apiKey });
-
-  const uploadJson = async (flowId: string): Promise<void> => {
-    const { error: uploadError } =
-      await zernio.whatsappflows.uploadWhatsAppFlowJson({
-        path: { flowId },
-        body: { accountId, flow_json: POST_JOB_FLOW_JSON },
-        signal,
-      });
-    if (uploadError) {
-      throw new Error("Zernio flow JSON upload failed", { cause: uploadError });
-    }
-  };
-
-  const listFlowsByName = async (
-    name: string,
-  ): Promise<{ id?: string; name?: string; status?: string }[]> => {
-    const { data, error } = await zernio.whatsappflows.listWhatsAppFlows({
-      query: { accountId },
-      signal,
-    });
-    if (error || !data?.flows) return [];
-    return data.flows.filter(
-      (flow: { name?: string }) => flow.name === name,
-    );
-  };
-
-  const createWithName = async (
-    name: string,
-  ): Promise<{ flowId: string } | undefined> => {
-    try {
-      const { data, error } = await zernio.whatsappflows.createWhatsAppFlow({
-        body: {
-          accountId,
-          name,
-          categories: [...POST_JOB_FLOW_CATEGORIES],
-        },
-        signal,
-      });
-      if (!error && data?.flow?.id) return { flowId: data.flow.id };
-    } catch {
-      // Name taken (4016019) surfaces as a thrown _ZernioApiError here —
-      // fall through to DRAFT reuse / versioned-name retry below.
-    }
-    return undefined;
-  };
-
-  const created = await createWithName(POST_JOB_FLOW_NAME);
-  if (created) {
-    await uploadJson(created.flowId);
-    return { flowId: created.flowId, reused: false };
-  }
-
-  const existing = await listFlowsByName(POST_JOB_FLOW_NAME);
-  const draft = existing.find((flow) => flow.status === "DRAFT" && flow.id);
-  if (draft?.id) {
-    await uploadJson(draft.id);
-    return { flowId: draft.id, reused: true };
-  }
-
-  for (let version = 2; version <= 5; version += 1) {
-    const versioned = `${POST_JOB_FLOW_NAME}_v${version}`;
-    const alreadyTaken = (await listFlowsByName(versioned)).length > 0;
-    if (alreadyTaken) continue;
-    const retry = await createWithName(versioned);
-    if (retry) {
-      await uploadJson(retry.flowId);
-      console.warn(
-        `[post-job-flow] Name ${POST_JOB_FLOW_NAME} taken (status: ${existing.map((flow) => flow.status).join(",") || "unknown"}), created ${versioned} instead.`,
-      );
-      return { flowId: retry.flowId, reused: false };
-    }
-  }
-
-  throw new Error(
-    `Zernio flow draft creation failed: name ${POST_JOB_FLOW_NAME} taken by non-DRAFT flow (${existing.map((flow) => `${flow.status}:${flow.id}`).join(", ") || "unknown"}). Rename the constant or delete the blocking flow.`,
+  return createDraftFlow(
+    {
+      name: POST_JOB_FLOW_NAME,
+      categories: POST_JOB_FLOW_CATEGORIES,
+      flowJson: POST_JOB_FLOW_JSON,
+      logTag: "post-job-flow",
+    },
+    accountId,
+    apiKey,
+    signal,
   );
 }
 
@@ -284,4 +217,10 @@ export function parsePostJobResponse(responseData: unknown): PostJobSubmit {
     job_image: record["job_image"],
     raw: responseData,
   };
+}
+
+// Adapter entry: unwrap wire shape then parse, so callers never touch
+// response_json plumbing.
+export function parsePostJobFlowPayload(raw: unknown): PostJobSubmit {
+  return parsePostJobResponse(unwrapFlowPayload(raw));
 }

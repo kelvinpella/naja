@@ -2,11 +2,11 @@ import type { FastifyBaseLogger } from "fastify";
 import type { Redis } from "ioredis";
 import type { WhatsappIncomingMessageJob } from "../queues/zernio-events.js";
 import {
-  getStartedIdempotencyKey,
+  idempotencyKeyFor,
   saveConversationState,
   type ConversationState,
 } from "./whatsapp-conversation-state.js";
-import { sendGetStartedMessage } from "./whatsapp-get-started.js";
+import { sendStageMessage } from "./whatsapp-stage-messages.js";
 
 export type NewConversationContext = {
   job: WhatsappIncomingMessageJob;
@@ -33,10 +33,11 @@ export async function handleNewConversation({
   };
   await saveConversationState(redis, key, state);
 
-  await sendGetStartedMessage(
+  await sendStageMessage(
+    "get_started",
     { ...job, eventId: state.promptEventId },
     apiKey,
-    getStartedIdempotencyKey(state.promptEventId),
+    idempotencyKeyFor("get_started", state.promptEventId),
     signal,
   );
   signal.throwIfAborted();

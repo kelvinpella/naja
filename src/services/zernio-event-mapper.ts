@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import type { WhatsappIncomingMessageJob } from "../queues/zernio-events.js";
 import type { ZernioWebhookPayload } from "./zernio-events.js";
+import { normalizePhoneDigits } from "./phone.js";
 
 export function toWhatsappMessageJob(
   payload: ZernioWebhookPayload,
 ): WhatsappIncomingMessageJob | null {
   const sender = payload.message?.sender;
-  const phoneNumber = sender?.phoneNumber?.replace(/\D/g, "") ?? "";
+  const phoneNumber = normalizePhoneDigits(sender?.phoneNumber);
   const senderIdentity = sender?.businessScopedUserId ?? (phoneNumber || sender?.id);
   const accountId = payload.account?.accountId;
   const conversationId = payload.conversation?.id;

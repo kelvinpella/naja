@@ -6,6 +6,7 @@ import {
   type JobPage,
 } from "./job-types.js";
 import { getJobsClient } from "./supabase-client.js";
+import { normalizePhoneDigits } from "../phone.js";
 
 type JobRow = {
   id: string;
@@ -66,7 +67,7 @@ function toPage(rows: JobRow[]): JobPage {
 }
 
 function normalizeExcludePhone(opts?: { excludePhone?: string | null }): string {
-  return (opts?.excludePhone ?? "").replace(/\D/g, "");
+  return normalizePhoneDigits(opts?.excludePhone);
 }
 
 function baseQuery(
