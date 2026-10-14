@@ -4,10 +4,16 @@ import { sendJobText } from "../whatsapp-stage-messages.js";
 import { idempotencyKeyFor } from "../whatsapp-conversation-state.js";
 import { getJobById } from "../jobs/jobs.js";
 import {
+  azamPayMnoCheckout,
+  buildExternalId,
+  detectAzamPayProvider,
+  loadAzamPayConfig,
+  toAzamPayMsisdn,
+} from "../payments/azampay.js";
+import {
   APPLY_BUTTON_TITLE,
   DETAIL_BUTTON_TITLE,
   JOB_CARD_IMAGE_URL,
-  applyConfirmationBody,
   applyPayload,
   fitTitle,
   fullDetailBody,
@@ -17,6 +23,58 @@ import {
   type HandlerContext,
   type HandlerResult,
 } from "./handler-context.js";
+
+export async function buildOmbaCheckoutBody(
+  ctx: HandlerContext,
+  jobId: string,
+): Promise<string> {
+  const { job, logger } = ctx;
+  const config = loadAzamPayConfig();
+  if (!config) {
+    logger.warn(
+      { eventId: job.eventId },
+      "Omba tap skipped AzamPay checkout: sandbox credentials missing",
+    );
+    return "Samahani, huduma ya malipo haijawekwa. Jaribu tena baadaye.";
+  }
+  const msisdn = toAzamPayMsisdn(job.senderPhone);
+  if (!msisdn) {
+    logger.warn(
+      { eventId: job.eventId },
+      "Omba tap skipped AzamPay checkout: no sender phone",
+    );
+    return "Samahani, hatukuona namba yako ya simu. Tuma ujumbe tena kisha bonyeza Omba.";
+  }
+  const provider = detectAzamPayProvider(msisdn);
+  const externalId = buildExternalId(jobId, job.eventId);
+  logger.info(
+    { eventId: job.eventId, jobId, provider, externalId, amount: config.testAmount },
+    "Firing AzamPay sandbox MNO checkout",
+  );
+  const result = await azamPayMnoCheckout(config, {
+    accountNumber: msisdn,
+    provider,
+    externalId,
+    amount: config.testAmount,
+    jobId,
+  });
+  if (result.ok) {
+    logger.info(
+      { eventId: job.eventId, jobId, transactionId: result.transactionId },
+      "AzamPay sandbox checkout accepted",
+    );
+    return (
+      `💳 Ombi la malipo limetumwa (TZS ${config.testAmount}).\n\n` +
+      `Angalia simu yako ${msisdn} na uweke PIN kukamilisha malipo.\n` +
+      `Kumbukumbu: ${result.transactionId}`
+    );
+  }
+  logger.warn(
+    { eventId: job.eventId, jobId, message: result.message },
+    "AzamPay sandbox checkout failed",
+  );
+  return `Samahani, ombi la malipo limeshindwa: ${result.message}. Jaribu tena.`;
+}
 
 export async function handleJobRoute(
   ctx: HandlerContext,
@@ -63,12 +121,13 @@ export async function handleJobRoute(
       logger.info({ eventId: job.eventId, jobId: listing.id }, "Sent job detail");
       return { clear: false };
     }
-    // Omba ends the stage: share the poster's contact, then clear state so
-    // the next free-text message starts a fresh get-started menu. No
-    // buttons: with state gone a tap would have nowhere to resume to.
+    // Omba ends the stage. Sandbox (issue #24): fire an AzamPay MNO
+    // checkout STK push at the tapper's own number before clearing, so we
+    // can verify the wallet prompt opens on a real phone.
     // Old card buttons keep working statelessly through their payload ids.
+    const azamPayBody = await buildOmbaCheckoutBody(ctx, listing.id);
     await sendJobText(
-      applyConfirmationBody(listing.posterPhone ?? ""),
+      azamPayBody,
       [],
       job,
       apiKey,

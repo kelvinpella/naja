@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
 import queuePlugin from "./plugins/queue.js";
 import zernioWebhookRoutes from "./routes/webhooks/zernio.js";
+import azamPayWebhookRoutes from "./routes/webhooks/azampay.js";
 
 export function buildApp() {
   const app = Fastify({ logger: true });
@@ -15,6 +16,7 @@ export function buildApp() {
 
   app.register(queuePlugin);
   app.register(zernioWebhookRoutes, { prefix: "/webhooks" });
+  app.register(azamPayWebhookRoutes, { prefix: "/webhooks" });
   return app;
 }
 
