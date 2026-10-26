@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import convert from "heic-convert";
 import sharp from "sharp";
 import { getJobsClient } from "./supabase-client.js";
-import { getZernioClient } from "../zernio-client.js";
+import { getKapsoClient, withAbort } from "../kapso-client.js";
 import type { PostJobFlowMedia } from "../stages/post-job/flow.js";
 
 export const JOB_IMAGES_BUCKET = "job_images";
@@ -78,15 +78,15 @@ export function normalizePostJobMedia(value: unknown): PostJobFlowMedia | null {
 
 // Flow PhotoPicker uploads in `complete` mode arrive as
 // [{id, mime_type, sha256, file_name}] — no cdn_url (that shape only comes
-// from a data_exchange endpoint). The id is a WhatsApp media id, fetched
-// here via the official @zernio/node SDK (GET /v1/whatsapp/media/{mediaId}).
+// from a data_exchange endpoint). The id is a WhatsApp media id, downloaded
+// here through the official @kapso/whatsapp-cloud-api media helper.
 // Fetch promptly: Meta drops inbound media after a short retention window.
 export async function uploadPostJobImage(
   media: PostJobFlowMedia,
   opts: {
     userPhone?: string;
     personKey: string;
-    accountId: string;
+    phoneNumberId: string;
     apiKey: string;
     signal?: AbortSignal;
   },
@@ -95,14 +95,15 @@ export async function uploadPostJobImage(
   const mediaId =
     typeof rawId === "string" ? rawId : typeof rawId === "number" ? String(rawId) : undefined;
   if (!mediaId) throw new Error("Image media ID missing in Flow response");
-  const zernio = getZernioClient(opts.apiKey);
-  const { data, error } = await zernio.whatsapp.getWhatsAppMedia({
-    path: { mediaId },
-    query: { accountId: opts.accountId },
-    signal: opts.signal,
+  const kapso = getKapsoClient(opts.apiKey);
+  const download = kapso.media.download({
+    mediaId,
+    phoneNumberId: opts.phoneNumberId,
+    as: "blob",
   });
-  if (error || !data) throw new Error("Image download failed", { cause: error });
-  const blob = data as Blob;
+  const blob = (opts.signal
+    ? await withAbort(download, opts.signal)
+    : await download) as Blob;
   const downloaded = new Uint8Array(await blob.arrayBuffer());
   if (downloaded.length === 0) throw new Error("Downloaded image is empty");
   if (downloaded.length > MAX_IMAGE_BYTES) {

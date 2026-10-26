@@ -4,10 +4,10 @@ import { Queue } from "bullmq";
 import type { Redis } from "ioredis";
 import { connectRedis } from "../services/redis-connection.js";
 import {
-  ZERNIO_QUEUE_JOB_OPTIONS,
+  WHATSAPP_QUEUE_JOB_OPTIONS,
   WHATSAPP_INCOMING_MESSAGES_QUEUE,
   type WhatsappIncomingMessageJob,
-} from "../queues/zernio-events.js";
+} from "../queues/whatsapp-events.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -25,7 +25,7 @@ const queuePlugin: FastifyPluginAsync = fp(
       WHATSAPP_INCOMING_MESSAGES_QUEUE,
       {
         connection: redis,
-        defaultJobOptions: ZERNIO_QUEUE_JOB_OPTIONS,
+        defaultJobOptions: WHATSAPP_QUEUE_JOB_OPTIONS,
       },
     );
 

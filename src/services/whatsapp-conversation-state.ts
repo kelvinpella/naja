@@ -23,9 +23,9 @@ export type ConversationState = {
   listKeyword?: string;
 };
 
-export function conversationKey(personKey: string, accountId: string): string {
+export function conversationKey(personKey: string, phoneNumberId: string): string {
   const stateHash = createHash("sha256")
-    .update(`${accountId}:${personKey}`)
+    .update(`${phoneNumberId}:${personKey}`)
     .digest("hex");
   return `naja:whatsapp:conversation:${stateHash}`;
 }

@@ -91,16 +91,16 @@ describe("Stage registry seam", () => {
   });
 
   it("resolves Flow ids per stage through one table", () => {
-    process.env["ZERNIO_TANGAZA_FLOW_ID"] = "flow-tangaza";
-    process.env["ZERNIO_FIND_JOB_FLOW_ID"] = "flow-search";
+    process.env["KAPSO_TANGAZA_FLOW_ID"] = "flow-tangaza";
+    process.env["KAPSO_FIND_JOB_FLOW_ID"] = "flow-search";
     try {
       assert.equal(getStageFlowId("tangaza_kazi"), "flow-tangaza");
       assert.equal(getStageFlowId("tafuta_kazi_search"), "flow-search");
       assert.equal(getStageFlowId("tafuta_kazi"), undefined);
       assert.equal(getStageFlowId("get_started"), undefined);
     } finally {
-      delete process.env["ZERNIO_TANGAZA_FLOW_ID"];
-      delete process.env["ZERNIO_FIND_JOB_FLOW_ID"];
+      delete process.env["KAPSO_TANGAZA_FLOW_ID"];
+      delete process.env["KAPSO_FIND_JOB_FLOW_ID"];
     }
   });
 });

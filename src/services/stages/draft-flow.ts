@@ -1,8 +1,8 @@
-// Shared DRAFT Flow creator behind both Stage Flows. Lifecycle: DRAFT ->
-// upload JSON -> send with draft:true for testing. Never published by this
-// codebase. Reuses the existing DRAFT with the same name if Meta reports
-// "Flow name is not unique", otherwise versions the name.
-import { getZernioClient } from "../zernio-client.js";
+// Shared DRAFT Flow creator behind both Stage Flows. Lifecycle: DRAFT with
+// JSON uploaded -> send with mode:"draft" for testing. Never published by
+// this codebase. Reuses an existing DRAFT with the same name when Meta
+// reports the name as taken, otherwise versions the name.
+import { getKapsoClient } from "../kapso-client.js";
 
 export type DraftFlowSpec<T> = {
   name: string;
@@ -11,90 +11,92 @@ export type DraftFlowSpec<T> = {
   logTag: string;
 };
 
+type FlowSummary = { id?: string; name?: string; status?: string };
+
 export async function createDraftFlow<T>(
   spec: DraftFlowSpec<T>,
-  accountId: string,
+  wabaId: string,
   apiKey: string,
-  signal?: AbortSignal,
 ): Promise<{ flowId: string; reused: boolean }> {
-  const zernio = getZernioClient(apiKey);
+  const kapso = getKapsoClient(apiKey);
 
-  const uploadJson = async (flowId: string): Promise<void> => {
-    const { error: uploadError } =
-      await zernio.whatsappflows.uploadWhatsAppFlowJson({
-        path: { flowId },
-        body: { accountId, flow_json: spec.flowJson },
-        signal,
+  const listFlowsByName = async (name: string): Promise<FlowSummary[]> => {
+    try {
+      const response = await kapso.flows.list<{ data?: FlowSummary[] }>({
+        wabaId,
       });
-    if (uploadError) {
-      throw new Error("Zernio flow JSON upload failed", { cause: uploadError });
+      return (response?.data ?? []).filter((flow) => flow.name === name);
+    } catch {
+      return [];
     }
-  };
-
-  const listFlowsByName = async (
-    name: string,
-  ): Promise<{ id?: string; name?: string; status?: string }[]> => {
-    const { data, error } = await zernio.whatsappflows.listWhatsAppFlows({
-      query: { accountId },
-      signal,
-    });
-    if (error || !data?.flows) return [];
-    return data.flows.filter(
-      (flow: { name?: string }) => flow.name === name,
-    );
   };
 
   const createWithName = async (
     name: string,
   ): Promise<{ flowId: string } | undefined> => {
-    try {
-      const { data, error } = await zernio.whatsappflows.createWhatsAppFlow({
-        body: {
-          accountId,
-          name,
-          categories: [...spec.categories],
-        },
-        signal,
-      });
-      if (!error && data?.flow?.id) return { flowId: data.flow.id };
-    } catch {
-      // Name taken surfaces as a thrown _ZernioApiError on some SDK paths
-      // and as an error return on others — fall through to DRAFT reuse /
-      // versioned-name retry below either way.
+    const created = await kapso.flows.create({
+      wabaId,
+      name,
+      categories: [...spec.categories],
+      flowJson: spec.flowJson as Record<string, unknown>,
+      publish: false,
+    });
+    if (!created.id) return undefined;
+    if (created.validationErrors?.length) {
+      throw new Error(
+        `Kapso flow JSON rejected: ${created.validationErrors
+          .map((item) => item.message ?? item.error)
+          .join("; ")}`,
+      );
     }
-    return undefined;
+    return { flowId: created.id };
   };
 
-  const created = await createWithName(spec.name);
-  if (created) {
-    await uploadJson(created.flowId);
-    return { flowId: created.flowId, reused: false };
-  }
-
-  // Name taken: reuse the DRAFT if there is one, otherwise version the name
-  // (existing is PUBLISHED/BLOCKED/etc. and can't be overwritten).
-  const existing = await listFlowsByName(spec.name);
-  const draft = existing.find((flow) => flow.status === "DRAFT" && flow.id);
-  if (draft?.id) {
-    await uploadJson(draft.id);
-    return { flowId: draft.id, reused: true };
-  }
-
-  for (let version = 2; version <= 5; version += 1) {
-    const versioned = `${spec.name}_v${version}`;
-    const alreadyTaken = (await listFlowsByName(versioned)).length > 0;
-    if (alreadyTaken) continue;
-    const retry = await createWithName(versioned);
-    if (retry) {
-      await uploadJson(retry.flowId);
-      console.warn(
-        `[${spec.logTag}] Name ${spec.name} taken (status: ${existing.map((flow) => flow.status).join(",") || "unknown"}), created ${versioned} instead.`,
-      );
-      return { flowId: retry.flowId, reused: false };
+  try {
+    const created = await createWithName(spec.name);
+    if (created) return { flowId: created.flowId, reused: false };
+  } catch (error) {
+    // Name taken, or the create failed for a retryable reason. Reuse an
+    // existing DRAFT with this name before giving up.
+    const existing = await listFlowsByName(spec.name);
+    const draft = existing.find((flow) => flow.status === "DRAFT" && flow.id);
+    if (draft?.id) {
+      await kapso.flows.updateAsset({
+        flowId: draft.id,
+        json: spec.flowJson as Record<string, unknown>,
+        // The Kapso proxy resolves the WhatsApp configuration from this id;
+        // without it the asset upload fails with "configuration not found".
+        businessAccountId: wabaId,
+      });
+      return { flowId: draft.id, reused: true };
     }
+
+    // Existing flow is PUBLISHED/BLOCKED/etc. and can't be overwritten:
+    // create a versioned DRAFT instead.
+    for (let version = 2; version <= 5; version += 1) {
+      const versioned = `${spec.name}_v${version}`;
+      const alreadyTaken = (await listFlowsByName(versioned)).length > 0;
+      if (alreadyTaken) continue;
+      try {
+        const retry = await createWithName(versioned);
+        if (retry) {
+          console.warn(
+            `[${spec.logTag}] Name ${spec.name} taken (status: ${existing
+              .map((flow) => flow.status)
+              .join(",") || "unknown"}), created ${versioned} instead.`,
+          );
+          return { flowId: retry.flowId, reused: false };
+        }
+      } catch {
+        // Try the next version number.
+      }
+    }
+
+    throw new Error(
+      `Kapso flow draft creation failed for ${spec.name}; the name is taken or Meta rejected the JSON.`,
+      { cause: error },
+    );
   }
 
-  throw new Error(
-    `Zernio flow draft creation failed: name ${spec.name} taken by non-DRAFT flow (${existing.map((flow) => `${flow.status}:${flow.id}`).join(", ") || "unknown"}). Rename the constant or delete the blocking flow.`,
-  );
+  throw new Error(`Kapso flow draft creation returned no id for ${spec.name}`);
 }

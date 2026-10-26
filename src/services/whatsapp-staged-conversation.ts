@@ -3,7 +3,7 @@
 // replay of plain Stages; every Job transition lives behind its own seam.
 import type { FastifyBaseLogger } from "fastify";
 import type { Redis } from "ioredis";
-import type { WhatsappIncomingMessageJob } from "../queues/zernio-events.js";
+import type { WhatsappIncomingMessageJob } from "../queues/whatsapp-events.js";
 import {
   clearConversationState,
   saveConversationState,

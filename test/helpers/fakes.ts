@@ -1,5 +1,5 @@
 // Shared fakes for service tests. See Fastify testing guidance: Test Factory Pattern.
-import type { WhatsappIncomingMessageJob } from "../../src/queues/zernio-events.js";
+import type { WhatsappIncomingMessageJob } from "../../src/queues/whatsapp-events.js";
 import type { ConversationState } from "../../src/services/whatsapp-conversation-state.js";
 
 export type FakeRedis = {
@@ -26,9 +26,10 @@ export function makeJob(
   return {
     eventId: "evt-1",
     personKey: "person-1",
-    accountId: "acct-1",
-    conversationId: "conv-1",
-    standby: false,
+    phoneNumberId: "pn-1",
+    recipient: "255712345678",
+    recipientType: "phone",
+    senderPhone: "255712345678",
     ...overrides,
   };
 }
