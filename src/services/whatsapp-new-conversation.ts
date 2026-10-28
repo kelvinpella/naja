@@ -1,6 +1,6 @@
 import type { FastifyBaseLogger } from "fastify";
 import type { Redis } from "ioredis";
-import type { WhatsappIncomingMessageJob } from "../queues/zernio-events.js";
+import type { WhatsappIncomingMessageJob } from "../queues/whatsapp-events.js";
 import {
   idempotencyKeyFor,
   saveConversationState,

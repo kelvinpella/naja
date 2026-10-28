@@ -3,7 +3,7 @@
 // The router saves/clears exactly once per message.
 import type { FastifyBaseLogger } from "fastify";
 import type { Redis } from "ioredis";
-import type { WhatsappIncomingMessageJob } from "../../queues/zernio-events.js";
+import type { WhatsappIncomingMessageJob } from "../../queues/whatsapp-events.js";
 import type { ConversationState } from "../whatsapp-conversation-state.js";
 import { idempotencyKeyFor } from "../whatsapp-conversation-state.js";
 import { sendJobCarousel, sendJobText } from "../whatsapp-stage-messages.js";

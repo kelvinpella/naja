@@ -68,20 +68,14 @@ export function cardBody(job: JobListing): string {
   const title = fitTitle(job.title);
   const date = formatPostedDate(job.createdAt);
   const areaTag = fitArea(job.area) ? `📍 ${fitArea(job.area)}` : "";
-  // Area rides the date line (no room for a footer: Meta carousel cards
-  // have header + body + buttons only). Same line breaks as before.
-  const secondLine = [date, areaTag].filter(Boolean).join("   ");
   const amountLine = job.budget !== null ? formatAmount(job.budget) : "";
-  const head = secondLine ? `*${title}*\n${secondLine}\n\n` : `*${title}*\n\n`;
-  const tail = amountLine ? `\n\n${amountLine}` : "";
-  let descBudget = CARD_BODY_LIMIT - head.length - tail.length;
-  let tailOut = tail;
-  if (descBudget < 20 && tail) {
-    tailOut = "";
-    descBudget = CARD_BODY_LIMIT - head.length;
-  }
-  const desc = excerpt(job.description, Math.max(0, descBudget));
-  return `${head}${desc}${tailOut}`;
+  // Meta carousel cards allow header + body + buttons only, and the body may
+  // carry at most 2 line breaks (160 chars). Put date, area, and amount on one
+  // line so the excerpt gets the third line.
+  const secondLine = [date, areaTag, amountLine].filter(Boolean).join("   ");
+  const head = `*${title}*\n${secondLine}\n`;
+  const desc = excerpt(job.description, Math.max(0, CARD_BODY_LIMIT - head.length));
+  return `${head}${desc}`;
 }
 
 const DETAIL_BODY_LIMIT = 1000;

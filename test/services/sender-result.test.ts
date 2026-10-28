@@ -5,15 +5,16 @@ import {
   sendJobText,
   sendStageMessage,
 } from "../../src/services/whatsapp-stage-messages.js";
-import type { WhatsappIncomingMessageJob } from "../../src/queues/zernio-events.js";
+import type { WhatsappIncomingMessageJob } from "../../src/queues/whatsapp-events.js";
 
 function makeJob(overrides: Partial<WhatsappIncomingMessageJob> = {}) {
   return {
     eventId: "evt-1",
     personKey: "person-1",
-    accountId: "acct-1",
-    conversationId: "conv-1",
-    standby: false,
+    phoneNumberId: "pn-1",
+    recipient: "255712345678",
+    recipientType: "phone",
+    senderPhone: "255712345678",
     ...overrides,
   } as WhatsappIncomingMessageJob;
 }
@@ -51,17 +52,17 @@ describe("sender Results", () => {
   beforeEach(() => {
     calls = [];
     originalFetch = globalThis.fetch;
-    originalFlowId = process.env["ZERNIO_TANGAZA_FLOW_ID"];
+    originalFlowId = process.env["KAPSO_TANGAZA_FLOW_ID"];
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    if (originalFlowId === undefined) delete process.env["ZERNIO_TANGAZA_FLOW_ID"];
-    else process.env["ZERNIO_TANGAZA_FLOW_ID"] = originalFlowId;
+    if (originalFlowId === undefined) delete process.env["KAPSO_TANGAZA_FLOW_ID"];
+    else process.env["KAPSO_TANGAZA_FLOW_ID"] = originalFlowId;
   });
 
   it("reports flow when the Flow send succeeds", async () => {
-    process.env["ZERNIO_TANGAZA_FLOW_ID"] = "flow-1";
+    process.env["KAPSO_TANGAZA_FLOW_ID"] = "flow-1";
     stubFetch(calls, () => ({ status: 200, body: { success: true, data: {} } }));
     const result = await sendStageMessage(
       "tangaza_kazi",
@@ -76,7 +77,7 @@ describe("sender Results", () => {
   });
 
   it("reports buttons when the Flow send falls back", async () => {
-    process.env["ZERNIO_TANGAZA_FLOW_ID"] = "flow-1";
+    process.env["KAPSO_TANGAZA_FLOW_ID"] = "flow-1";
     stubFetch(calls, (n) =>
       n === 1
         ? { status: 400, body: { error: { message: "blocked" } } }
@@ -95,7 +96,7 @@ describe("sender Results", () => {
   });
 
   it("reports text when the banner image send falls back", async () => {
-    delete process.env["ZERNIO_TANGAZA_FLOW_ID"];
+    delete process.env["KAPSO_TANGAZA_FLOW_ID"];
     stubFetch(calls, (n) =>
       n === 1
         ? { status: 400, body: { error: { message: "bad image" } } }

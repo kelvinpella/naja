@@ -21,7 +21,7 @@ Whenever you add or update dependencies:
 
 ## 4. Prefer official SDKs over raw HTTP
 
-- When an official SDK is available in the project (e.g. `@zernio/node` for Zernio, `@supabase/supabase-js` for Supabase), always use it instead of hand-rolled `fetch` calls.
+- When an official SDK is available in the project (e.g. `@kapso/whatsapp-cloud-api` for WhatsApp, `@supabase/supabase-js` for Supabase), always use it instead of hand-rolled `fetch` calls.
 - If the SDK is not yet installed, add it with the appropriate package manager and update the lockfile (see section 2).
 - Only fall back to raw HTTP when the SDK lacks the needed endpoint or option — and leave a comment explaining why.
 

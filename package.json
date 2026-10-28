@@ -20,8 +20,8 @@
   "keywords": [],
   "type": "module",
   "dependencies": {
+    "@kapso/whatsapp-cloud-api": "^0.4.0",
     "@supabase/supabase-js": "^2.117.2",
-    "@zernio/node": "^0.2.1078",
     "bullmq": "^6.3.11",
     "fastify": "^5.12.4",
     "fastify-plugin": "^6.0.0",

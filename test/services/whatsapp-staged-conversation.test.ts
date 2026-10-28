@@ -11,7 +11,7 @@ import type {
 import { handleStagedConversation } from "../../src/services/whatsapp-staged-conversation.js";
 import { processWhatsappMessage } from "../../src/services/whatsapp-conversation.js";
 import { conversationKey } from "../../src/services/whatsapp-conversation-state.js";
-import type { WhatsappIncomingMessageJob } from "../../src/queues/zernio-events.js";
+import type { WhatsappIncomingMessageJob } from "../../src/queues/whatsapp-events.js";
 
 const EXPECTED_STAGES: ConversationStage[] = [
   "get_started",
@@ -152,9 +152,9 @@ function makeJob(
   return {
     eventId: "evt-1",
     personKey: "person-1",
-    accountId: "acct-1",
-    conversationId: "conv-1",
-    standby: false,
+    phoneNumberId: "pn-1",
+    recipient: "255712345678",
+    recipientType: "phone",
     ...overrides,
   };
 }
@@ -185,10 +185,10 @@ describe("handleStagedConversation transitions", () => {
   beforeEach(() => {
     fetchCalls = [];
     originalFetch = globalThis.fetch;
-    originalFlowId = process.env["ZERNIO_FIND_JOB_FLOW_ID"];
-    originalLegacyFlowId = process.env["ZERNIO_TAFUTA_FLOW_ID"];
-    delete process.env["ZERNIO_FIND_JOB_FLOW_ID"];
-    delete process.env["ZERNIO_TAFUTA_FLOW_ID"];
+    originalFlowId = process.env["KAPSO_FIND_JOB_FLOW_ID"];
+    originalLegacyFlowId = process.env["KAPSO_TAFUTA_FLOW_ID"];
+    delete process.env["KAPSO_FIND_JOB_FLOW_ID"];
+    delete process.env["KAPSO_TAFUTA_FLOW_ID"];
     stubJobs();
     globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
       let parsed: Record<string, unknown>;
@@ -212,10 +212,10 @@ describe("handleStagedConversation transitions", () => {
   afterEach(() => {
     globalThis.fetch = originalFetch;
     setJobsDataSource(null);
-    if (originalFlowId === undefined) delete process.env["ZERNIO_FIND_JOB_FLOW_ID"];
-    else process.env["ZERNIO_FIND_JOB_FLOW_ID"] = originalFlowId;
-    if (originalLegacyFlowId === undefined) delete process.env["ZERNIO_TAFUTA_FLOW_ID"];
-    else process.env["ZERNIO_TAFUTA_FLOW_ID"] = originalLegacyFlowId;
+    if (originalFlowId === undefined) delete process.env["KAPSO_FIND_JOB_FLOW_ID"];
+    else process.env["KAPSO_FIND_JOB_FLOW_ID"] = originalFlowId;
+    if (originalLegacyFlowId === undefined) delete process.env["KAPSO_TAFUTA_FLOW_ID"];
+    else process.env["KAPSO_TAFUTA_FLOW_ID"] = originalLegacyFlowId;
   });
 
   it("selecting tafuta_kazi moves to that stage and sends its menu", async () => {
@@ -233,12 +233,13 @@ describe("handleStagedConversation transitions", () => {
 
     assert.equal(state.stage, "tafuta_kazi");
     assert.equal(fetchCalls.length, 1);
-    assert.ok(
-      (fetchCalls[0].body["message"] as string).includes("*Maelezo*"),
-    );
-    const buttons = fetchCalls[0].body["buttons"] as { payload: string }[];
+    const menu = fetchCalls[0].body["interactive"] as {
+      body: { text: string };
+      action: { buttons: { reply: { id: string } }[] };
+    };
+    assert.ok(menu.body.text.includes("*Maelezo*"));
     assert.deepEqual(
-      buttons.map((b) => b.payload),
+      menu.action.buttons.map((b) => b.reply.id),
       ["tafuta_kazi_search", "tafuta_kazi_mixed", "get_started"],
     );
     const saved = JSON.parse(redis.store.get("k") as string) as ConversationState;
@@ -285,8 +286,10 @@ describe("handleStagedConversation transitions", () => {
 
     assert.equal(state.stage, "tafuta_kazi");
     assert.equal(calls, 2);
-    assert.ok("attachmentUrl" in fetchCalls[0].body);
-    assert.ok(!("attachmentUrl" in fetchCalls[1].body));
+    assert.ok("header" in (fetchCalls[0].body["interactive"] as object));
+    assert.ok(
+      !("header" in (fetchCalls[1].body["interactive"] as object)),
+    );
   });
 
   it("selecting tafuta_kazi_search moves to search and falls back to buttons without a flow id", async () => {
@@ -304,8 +307,12 @@ describe("handleStagedConversation transitions", () => {
 
     assert.equal(state.stage, "tafuta_kazi_search");
     assert.equal(fetchCalls.length, 1);
-    assert.ok(fetchCalls[0].body["message"]);
-    assert.ok(!("interactive" in fetchCalls[0].body));
+    const fallback = fetchCalls[0].body["interactive"] as {
+      type: string;
+      body: { text: string };
+    };
+    assert.equal(fallback.type, "button");
+    assert.ok(fallback.body.text.length > 0);
   });
 
   it("selecting tafuta_kazi_mixed sends the live job carousel", async () => {
@@ -381,17 +388,20 @@ describe("handleStagedConversation transitions", () => {
     });
 
     assert.equal(fetchCalls.length, 1);
-    assert.ok(!("interactive" in fetchCalls[0].body));
+    assert.equal(fetchCalls[0].body["type"], "interactive");
+    const card = fetchCalls[0].body["interactive"] as {
+      header: { type: string; image: { link: string } };
+      body: { text: string };
+      action: { buttons: { reply: { id: string } }[] };
+    };
+    assert.equal(card.header.type, "image");
+    assert.ok(card.header.image.link.includes("kazi_mpya_kvncsh"));
+    assert.ok(card.body.text.includes("mpishi mwenye uzoefu"));
     assert.ok(
-      (fetchCalls[0].body["attachmentUrl"] as string).includes("kazi_mpya_kvncsh"),
-    );
-    assert.ok(
-      (fetchCalls[0].body["message"] as string).includes("mpishi mwenye uzoefu"),
-    );
-    const buttons = fetchCalls[0].body["buttons"] as { payload: string }[];
-    assert.ok(
-      buttons.some((b) =>
-        b.payload.startsWith("job_apply:11111111-1111-1111-1111-111111111111"),
+      card.action.buttons.some((b) =>
+        b.reply.id.startsWith(
+          "job_apply:11111111-1111-1111-1111-111111111111",
+        ),
       ),
     );
     assert.equal(state.selectedJobId, "11111111-1111-1111-1111-111111111111");
@@ -411,10 +421,12 @@ describe("handleStagedConversation transitions", () => {
     );
 
     assert.ok(fetchCalls.length >= 1);
+    const lastBody = fetchCalls[fetchCalls.length - 1].body;
     assert.ok(
-      (fetchCalls[fetchCalls.length - 1].body["message"] as string).includes(
-        "mpishi mwenye uzoefu",
-      ),
+      (
+        (lastBody["interactive"] as { body: { text: string } }).body
+          .text
+      ).includes("mpishi mwenye uzoefu"),
     );
     const saved = JSON.parse(
       redis.store.get(
@@ -427,7 +439,7 @@ describe("handleStagedConversation transitions", () => {
   it("does not wait for the typing indicator before doing handler work", async () => {
     const redis = makeRedis();
     redis.store.set(
-      conversationKey("person-1", "acct-1"),
+      conversationKey("person-1", "pn-1"),
       JSON.stringify(makeState({ stage: "tafuta_kazi_mixed" })),
     );
     let releaseTyping!: (value: Response) => void;
@@ -483,7 +495,10 @@ describe("handleStagedConversation transitions", () => {
     assert.equal(state.selectedJobId, "11111111-1111-1111-1111-111111111111");
     assert.equal(fetchCalls.length, 1);
     assert.ok(
-      (fetchCalls[0].body["message"] as string).includes("mpishi mwenye uzoefu"),
+      (
+        (fetchCalls[0].body["interactive"] as { body: { text: string } })
+          .body.text
+      ).includes("mpishi mwenye uzoefu"),
     );
   });
 
@@ -505,10 +520,10 @@ describe("handleStagedConversation transitions", () => {
     });
 
     assert.equal(fetchCalls.length, 1);
-    const message = fetchCalls[0].body["message"] as string;
-    assert.ok(message.startsWith("✅ Waweza wasiliana"));
-    assert.ok(message.includes("Phone:+255712345678"));
-    assert.ok(!("buttons" in fetchCalls[0].body));
+    const text = fetchCalls[0].body["text"] as { body: string };
+    assert.ok(text.body.startsWith("✅ Waweza wasiliana"));
+    assert.ok(text.body.includes("Phone:+255712345678"));
+    assert.equal(fetchCalls[0].body["type"], "text");
     assert.equal(redis.store.get("k"), undefined);
   });
 
@@ -528,7 +543,10 @@ describe("handleStagedConversation transitions", () => {
     assert.equal(state.stage, "tafuta_kazi");
     assert.equal(fetchCalls.length, 1);
     assert.ok(
-      (fetchCalls[0].body["message"] as string).includes("*Maelezo*"),
+      (
+        (fetchCalls[0].body["interactive"] as { body: { text: string } })
+          .body.text
+      ).includes("*Maelezo*"),
     );
   });
 
@@ -546,7 +564,11 @@ describe("handleStagedConversation transitions", () => {
     });
 
     assert.equal(state.stage, "tangaza_kazi");
-    assert.equal(fetchCalls[0].body["message"], REGISTRY["tangaza_kazi"].body);
+    assert.equal(
+      (fetchCalls[0].body["interactive"] as { body: { text: string } }).body
+        .text,
+      REGISTRY["tangaza_kazi"].body,
+    );
   });
 
   it("back button returns to get_started and re-sends the menu", async () => {
@@ -563,7 +585,11 @@ describe("handleStagedConversation transitions", () => {
     });
 
     assert.equal(state.stage, "get_started");
-    assert.equal(fetchCalls[0].body["message"], REGISTRY["get_started"].body);
+    assert.equal(
+      (fetchCalls[0].body["interactive"] as { body: { text: string } }).body
+        .text,
+      REGISTRY["get_started"].body,
+    );
   });
 
   it("selecting vigezo_na_masharti sends the terms and clears the stage", async () => {
@@ -581,12 +607,13 @@ describe("handleStagedConversation transitions", () => {
     });
 
     assert.equal(fetchCalls.length, 1);
-    assert.ok(
-      (fetchCalls[0].body["message"] as string).includes("*Vigezo na Masharti ya Naja*"),
-    );
-    const buttons = fetchCalls[0].body["buttons"] as { title: string }[];
+    const terms = fetchCalls[0].body["interactive"] as {
+      body: { text: string };
+      action: { buttons: { reply: { title: string } }[] };
+    };
+    assert.ok(terms.body.text.includes("*Vigezo na Masharti ya Naja*"));
     assert.deepEqual(
-      buttons.map((b) => b.title),
+      terms.action.buttons.map((b) => b.reply.title),
       ["Rudi nyuma"],
     );
     assert.equal(redis.store.get("k"), undefined);
@@ -606,10 +633,12 @@ describe("handleStagedConversation transitions", () => {
     );
 
     assert.ok(fetchCalls.length >= 1);
+    const lastBody = fetchCalls[fetchCalls.length - 1].body;
     assert.ok(
-      (fetchCalls[fetchCalls.length - 1].body["message"] as string).includes(
-        "*Vigezo na Masharti ya Naja*",
-      ),
+      (
+        (lastBody["interactive"] as { body: { text: string } }).body
+          .text
+      ).includes("*Vigezo na Masharti ya Naja*"),
     );
   });
 });

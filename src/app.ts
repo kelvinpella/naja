@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
 import queuePlugin from "./plugins/queue.js";
-import zernioWebhookRoutes from "./routes/webhooks/zernio.js";
+import kapsoWebhookRoutes from "./routes/webhooks/kapso.js";
 
 export function buildApp() {
   const app = Fastify({ logger: true });
@@ -14,7 +14,7 @@ export function buildApp() {
   }));
 
   app.register(queuePlugin);
-  app.register(zernioWebhookRoutes, { prefix: "/webhooks" });
+  app.register(kapsoWebhookRoutes, { prefix: "/webhooks" });
   return app;
 }
 

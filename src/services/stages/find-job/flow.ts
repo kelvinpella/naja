@@ -33,13 +33,13 @@ export const FIND_JOB_SEARCH_FLOW_JSON = {
                 label: "Andika jina la kazi",
                 required: true,
                 name: "keyword",
-                ["input-type"]: "text",
-                ["helper-text"]: "Mfano: mpishi, dereva, mlinzi",
+                ["inputType"]: "text",
+                ["helperText"]: "Mfano: mpishi, dereva, mlinzi",
               },
               {
                 type: "Footer",
                 label: "Tafuta",
-                ["on-click-action"]: {
+                ["onClickAction"]: {
                   name: "complete",
                   payload: {
                     keyword: "${form.keyword}",
@@ -55,10 +55,7 @@ export const FIND_JOB_SEARCH_FLOW_JSON = {
 };
 
 export function getFindJobSearchFlowId(): string | undefined {
-  return (
-    process.env["ZERNIO_FIND_JOB_FLOW_ID"] ??
-    process.env["ZERNIO_TAFUTA_FLOW_ID"]
-  );
+  return process.env["KAPSO_FIND_JOB_FLOW_ID"];
 }
 
 export type FindJobSearchResult = {
@@ -66,12 +63,12 @@ export type FindJobSearchResult = {
   raw: unknown;
 };
 
-// Uses official @zernio/node SDK via the shared draft helper. Creates a
-// DRAFT and uploads JSON. Never calls publish — stays DRAFT for testing.
+// Uses the official @kapso/whatsapp-cloud-api SDK via the shared draft
+// helper. Creates a DRAFT with its JSON. Never calls publish — stays DRAFT
+// for testing.
 export async function createFindJobSearchDraftFlow(
-  accountId: string,
+  wabaId: string,
   apiKey: string,
-  signal?: AbortSignal,
 ): Promise<{ flowId: string; reused: boolean }> {
   return createDraftFlow(
     {
@@ -80,9 +77,8 @@ export async function createFindJobSearchDraftFlow(
       flowJson: FIND_JOB_SEARCH_FLOW_JSON,
       logTag: "find-job-flow",
     },
-    accountId,
+    wabaId,
     apiKey,
-    signal,
   );
 }
 

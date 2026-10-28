@@ -41,7 +41,7 @@ export async function handlePostJobSubmit(
   );
 
   const prefill = {
-    init_values: { title, description, area, budget: budgetRaw },
+    initial: { title, description, area, budget: budgetRaw },
   };
   const fail = async (reason: string): Promise<HandlerResult> => {
     await sendJobText(
@@ -82,7 +82,7 @@ export async function handlePostJobSubmit(
       const uploaded = await uploadPostJobImage(media, {
         userPhone: job.senderPhone,
         personKey: job.personKey,
-        accountId: job.accountId,
+        phoneNumberId: job.phoneNumberId,
         apiKey,
         signal,
       });

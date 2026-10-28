@@ -1,8 +1,9 @@
 import type { FastifyBaseLogger } from "fastify";
-import type { WhatsappIncomingMessageJob } from "../queues/zernio-events.js";
+import type { WhatsappIncomingMessageJob } from "../queues/whatsapp-events.js";
 import { STAGE_MESSAGES, getStageFlowId, type StageId } from "./whatsapp-stages.js";
-import { getZernioClient } from "./zernio-client.js";
+import { getKapsoClient, recipientTarget, withAbort } from "./kapso-client.js";
 import type { CarouselCard } from "./jobs/job-carousel.js";
+import type { StageMessage } from "./stages/stage-types.js";
 
 export type StageSendResult = {
   sentAs: "flow" | "buttons" | "text";
@@ -18,6 +19,23 @@ export type TextSendResult = {
 
 type Logger = Pick<FastifyBaseLogger, "warn" | "info">;
 
+// Kapso (like the underlying Graph API) has no idempotency header, so retries
+// can re-send. The callback data is echoed on status webhooks, which keeps a
+// duplicate or late send attributable to the job that produced it.
+function trace(idempotencyKey: string): { bizOpaqueCallbackData: string } {
+  return { bizOpaqueCallbackData: idempotencyKey.slice(0, 512) };
+}
+
+type MediaType = StageMessage["imageType"];
+
+function mediaHeader(url: string, type: MediaType) {
+  if (type === "video") return { type: "video" as const, video: { link: url } };
+  if (type === "file") {
+    return { type: "document" as const, document: { link: url } };
+  }
+  return { type: "image" as const, image: { link: url } };
+}
+
 export async function sendStageMessage(
   stage: StageId,
   job: WhatsappIncomingMessageJob,
@@ -27,12 +45,13 @@ export async function sendStageMessage(
   opts?: { prefill?: Record<string, unknown>; logger?: Logger },
 ): Promise<StageSendResult> {
   const definition = STAGE_MESSAGES[stage];
-  const zernio = getZernioClient(apiKey);
+  const kapso = getKapsoClient(apiKey);
+  const target = recipientTarget(job);
   const warn = (message: string, cause: unknown): void => {
-    const target = opts?.logger?.warn;
+    const logTarget = opts?.logger?.warn;
     // Test fakes only stub info/error: fall back to console when warn is absent.
-    if (typeof target === "function") {
-      Reflect.apply(target, opts?.logger, [{ err: cause, stage }, message]);
+    if (typeof logTarget === "function") {
+      Reflect.apply(logTarget, opts?.logger, [{ err: cause, stage }, message]);
     } else {
       console.warn(`[whatsapp-stage-messages] ${message}`, cause);
     }
@@ -42,39 +61,27 @@ export async function sendStageMessage(
     const flowId = getStageFlowId(stage);
     if (flowId) {
       try {
-        const { error } = await zernio.messages.sendInboxMessage({
-          path: { conversationId: job.conversationId },
-          body: {
-            accountId: job.accountId,
-            message: definition.body,
-            interactive: {
-              type: "flow",
-              body: { text: definition.body },
-              action: {
-                name: "flow",
-                parameters: {
-                  flow_token: idempotencyKey.slice(0, 200),
-                  flow_id: flowId,
-                  flow_cta: definition.flow.cta,
-                  flow_action: "navigate",
-                  flow_action_payload: {
-                    screen: definition.flow.screen,
-                    ...(opts?.prefill
-                      ? { data: opts.prefill }
-                      : {}),
-                  },
-                  mode: "draft",
-                },
+        await withAbort(
+          kapso.messages.sendInteractiveFlow({
+            phoneNumberId: job.phoneNumberId,
+            ...target,
+            bodyText: definition.body,
+            parameters: {
+              flowId,
+              flowCta: definition.flow.cta,
+              flowToken: idempotencyKey.slice(0, 200),
+              flowAction: "navigate",
+              flowActionPayload: {
+                screen: definition.flow.screen,
+                ...(opts?.prefill ? { data: opts.prefill } : {}),
               },
+              // Testing only: the Flow stays DRAFT and is never published.
+              mode: "draft",
             },
-          },
-          headers: { "Idempotency-Key": idempotencyKey },
+            ...trace(idempotencyKey),
+          }),
           signal,
-        });
-
-        if (error) {
-          throw new Error("Zernio flow message send failed", { cause: error });
-        }
+        );
         return { sentAs: "flow" };
       } catch (error) {
         // Flow sends depend on WABA/Flow health (e.g. Meta 139000 Blocked by
@@ -88,26 +95,22 @@ export async function sendStageMessage(
   }
 
   const sendButtons = async (withImage: boolean): Promise<void> => {
-    const { error } = await zernio.messages.sendInboxMessage({
-      path: { conversationId: job.conversationId },
-      body: {
-        accountId: job.accountId,
-        message: definition.body,
+    await withAbort(
+      kapso.messages.sendInteractiveButtons({
+        phoneNumberId: job.phoneNumberId,
+        ...target,
+        bodyText: definition.body,
         ...(withImage && definition.imageUrl
-          ? {
-              attachmentUrl: definition.imageUrl,
-              attachmentType: definition.imageType ?? "image",
-            }
+          ? { header: mediaHeader(definition.imageUrl, definition.imageType) }
           : {}),
-        buttons: definition.buttons,
-      },
-      headers: { "Idempotency-Key": idempotencyKey },
+        buttons: definition.buttons.map((button) => ({
+          id: button.payload,
+          title: button.title,
+        })),
+        ...trace(idempotencyKey),
+      }),
       signal,
-    });
-
-    if (error) {
-      throw new Error("Zernio message send failed", { cause: error });
-    }
+    );
   };
 
   if (!definition.imageUrl) {
@@ -135,39 +138,76 @@ export async function sendJobCarousel(
   idempotencyKey: string,
   signal: AbortSignal,
 ): Promise<CarouselSendResult> {
-  const zernio = getZernioClient(apiKey);
-  const { error } = await zernio.messages.sendInboxMessage({
-    path: { conversationId: job.conversationId },
-    body: {
-      accountId: job.accountId,
-      message: heading,
-      interactive: {
-        type: "carousel",
-        body: { text: heading },
-        action: {
-          cards: cards.map((card, index) => ({
-            card_index: index,
-            type: "cta_url",
-            header: { type: "image", image: { link: card.imageUrl } },
-            body: { text: card.body },
-            action: {
-              buttons: card.buttons.map((button) => ({
-                type: "quick_reply",
-                quick_reply: { id: button.id, title: button.title },
-              })),
-            },
-          })),
-        },
-      },
-    },
-    headers: { "Idempotency-Key": idempotencyKey },
-    signal,
-  });
-
-  if (error) {
-    throw new Error("Zernio carousel send failed", { cause: error });
+  const kapso = getKapsoClient(apiKey);
+  try {
+    await withAbort(
+      kapso.messages.sendInteractiveCarousel({
+        phoneNumberId: job.phoneNumberId,
+        ...recipientTarget(job),
+        bodyText: heading,
+        cards: cards.map((card, index) => ({
+          cardIndex: index,
+          header: { type: "image" as const, image: { link: card.imageUrl } },
+          bodyText: card.body,
+          action: {
+            buttons: card.buttons.map((button) => ({
+              id: button.id,
+              title: button.title,
+            })),
+          },
+        })),
+        ...trace(idempotencyKey),
+      }),
+      signal,
+    );
+  } catch (error) {
+    throw new Error("Kapso carousel send failed", { cause: error });
   }
   return { sentAs: "carousel" };
+}
+
+async function sendMediaMessage(
+  kapso: ReturnType<typeof getKapsoClient>,
+  job: WhatsappIncomingMessageJob,
+  imageUrl: string,
+  imageType: MediaType,
+  caption: string,
+  callbackData: string,
+  signal: AbortSignal,
+): Promise<void> {
+  const base = {
+    phoneNumberId: job.phoneNumberId,
+    ...recipientTarget(job),
+    ...trace(callbackData),
+  };
+
+  if (imageType === "video") {
+    await withAbort(
+      kapso.messages.sendVideo({
+        ...base,
+        video: { link: imageUrl, caption },
+      }),
+      signal,
+    );
+    return;
+  }
+  if (imageType === "file") {
+    await withAbort(
+      kapso.messages.sendDocument({
+        ...base,
+        document: { link: imageUrl, caption },
+      }),
+      signal,
+    );
+    return;
+  }
+  await withAbort(
+    kapso.messages.sendImage({
+      ...base,
+      image: { link: imageUrl, caption },
+    }),
+    signal,
+  );
 }
 
 export async function sendJobText(
@@ -177,37 +217,58 @@ export async function sendJobText(
   apiKey: string,
   idempotencyKey: string,
   signal: AbortSignal,
-  opts?: { imageUrl?: string; imageType?: "image" | "video" | "audio" | "file" },
+  opts?: { imageUrl?: string; imageType?: MediaType },
 ): Promise<TextSendResult> {
-  const zernio = getZernioClient(apiKey);
-  const { error } = await zernio.messages.sendInboxMessage({
-    path: { conversationId: job.conversationId },
-    body: {
-      accountId: job.accountId,
-      message: body,
-      ...(opts?.imageUrl
-        ? {
-            attachmentUrl: opts.imageUrl,
-            attachmentType: opts.imageType ?? "image",
-          }
-        : {}),
-      // No buttons: plain text message (e.g. terminal confirmations after
-      // state is cleared, where a tap would have nowhere to resume to).
-      ...(buttons.length > 0
-        ? {
-            buttons: buttons.map((button) => ({
-              type: "postback" as const,
-              ...button,
-            })),
-          }
-        : {}),
-    },
-    headers: { "Idempotency-Key": idempotencyKey },
-    signal,
-  });
+  const kapso = getKapsoClient(apiKey);
+  const imageType = opts?.imageType ?? "image";
 
-  if (error) {
-    throw new Error("Zernio message send failed", { cause: error });
+  try {
+    if (buttons.length > 0) {
+      await withAbort(
+        kapso.messages.sendInteractiveButtons({
+          phoneNumberId: job.phoneNumberId,
+          ...recipientTarget(job),
+          bodyText: body,
+          ...(opts?.imageUrl
+            ? { header: mediaHeader(opts.imageUrl, imageType) }
+            : {}),
+          buttons: buttons.map((button) => ({
+            id: button.payload,
+            title: button.title,
+          })),
+          ...trace(idempotencyKey),
+        }),
+        signal,
+      );
+      return { sentAs: "buttons" };
+    }
+
+    // No buttons: terminal confirmations go out as text, with the photo as a
+    // captioned media message when one is configured.
+    if (opts?.imageUrl) {
+      await sendMediaMessage(
+        kapso,
+        job,
+        opts.imageUrl,
+        imageType,
+        body,
+        idempotencyKey,
+        signal,
+      );
+      return { sentAs: "text" };
+    }
+
+    await withAbort(
+      kapso.messages.sendText({
+        phoneNumberId: job.phoneNumberId,
+        ...recipientTarget(job),
+        body,
+        ...trace(idempotencyKey),
+      }),
+      signal,
+    );
+    return { sentAs: "text" };
+  } catch (error) {
+    throw new Error("Kapso message send failed", { cause: error });
   }
-  return { sentAs: buttons.length > 0 ? "buttons" : "text" };
 }

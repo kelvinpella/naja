@@ -7,9 +7,9 @@ import {
   WHATSAPP_INCOMING_MESSAGES_DEAD_LETTER_QUEUE,
   type WhatsappIncomingMessageDeadLetterJob,
   type WhatsappIncomingMessageJob,
-  zernioEventJobId,
-} from "./queues/zernio-events.js";
-import { createZernioEventProcessor } from "./workers/zernio-events.js";
+  whatsappEventJobId,
+} from "./queues/whatsapp-events.js";
+import { createWhatsappEventProcessor } from "./workers/whatsapp-events.js";
 import { connectJobsTimingToLogger } from "./services/jobs/job-timing.js";
 import { listJobs, setJobsCacheRedis } from "./services/jobs/jobs.js";
 
@@ -17,9 +17,9 @@ async function startWorker(): Promise<void> {
   const loggerHost = Fastify({ logger: true });
   const logger = loggerHost.log;
   connectJobsTimingToLogger(logger);
-  const zernioApiKey = process.env.ZERNIO_API_KEY;
-  if (!zernioApiKey) {
-    throw new Error("ZERNIO_API_KEY is required for WhatsApp replies");
+  const kapsoApiKey = process.env.KAPSO_API_KEY;
+  if (!kapsoApiKey) {
+    throw new Error("KAPSO_API_KEY is required for WhatsApp replies");
   }
 
   const redis = await connectRedis(
@@ -45,9 +45,9 @@ async function startWorker(): Promise<void> {
     },
   );
   const pendingDeadLetterWrites = new Set<Promise<void>>();
-  const processor = createZernioEventProcessor({
+  const processor = createWhatsappEventProcessor({
     redis,
-    zernioApiKey,
+    kapsoApiKey,
     logger,
   });
 
@@ -88,7 +88,7 @@ async function startWorker(): Promise<void> {
     let write: Promise<void>;
     write = deadLetterQueue
       .add("whatsapp-incoming-message-failed", deadLetterJob, {
-        jobId: `dead-${zernioEventJobId(job.data.eventId)}`,
+        jobId: `dead-${whatsappEventJobId(job.data.eventId)}`,
       })
       .then(() => undefined)
       .catch((deadLetterError: unknown) => {
@@ -145,7 +145,7 @@ async function startWorker(): Promise<void> {
   const shutdown = (signal: NodeJS.Signals) => {
     if (shutdownStarted) return;
     shutdownStarted = true;
-    logger.info({ signal }, "Shutting down Zernio workers");
+    logger.info({ signal }, "Shutting down Kapso workers");
     void close().catch((error: unknown) => {
       logger.error({ err: error }, "Graceful worker shutdown failed");
       process.exitCode = 1;
@@ -165,6 +165,6 @@ async function startWorker(): Promise<void> {
 }
 
 void startWorker().catch((error: unknown) => {
-  console.error("Failed to start Zernio workers:", error);
+  console.error("Failed to start Kapso workers:", error);
   process.exitCode = 1;
 });

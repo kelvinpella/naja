@@ -1,6 +1,6 @@
 import type { FastifyBaseLogger } from "fastify";
 import type { Redis } from "ioredis";
-import type { WhatsappIncomingMessageJob } from "../queues/zernio-events.js";
+import type { WhatsappIncomingMessageJob } from "../queues/whatsapp-events.js";
 import {
   conversationKey,
   loadConversationState,
@@ -11,7 +11,7 @@ import { handleNewConversation } from "./whatsapp-new-conversation.js";
 import { handleStagedConversation } from "./whatsapp-staged-conversation.js";
 import { isStageId } from "./whatsapp-stages.js";
 import { parseJobPayload, parseMorePayload } from "./jobs/jobs.js";
-import { sendTypingIndicator } from "./zernio-typing-indicator.js";
+import { sendTypingIndicator } from "./kapso-typing-indicator.js";
 
 export async function processWhatsappMessage(
   job: WhatsappIncomingMessageJob,
@@ -20,26 +20,21 @@ export async function processWhatsappMessage(
   logger: FastifyBaseLogger,
   signal: AbortSignal,
 ): Promise<void> {
-  if (job.standby) {
-    logger.info({ eventId: job.eventId }, "Skipping WhatsApp standby message");
-    return;
-  }
-
   // Best-effort typing runs unawaited alongside everything below: every
   // reply used to pay a full send round trip before doing any useful
   // work. Started first so the bubble usually still arrives first.
   // Failures are logged inside; the catch guards the abort rethrow
   // (aborts surface through the main path itself).
   void sendTypingIndicator(
-    job.conversationId,
-    job.accountId,
+    job.phoneNumberId,
+    job.eventId,
     apiKey,
     logger,
     signal,
   ).catch(() => {});
 
   signal.throwIfAborted();
-  const key = conversationKey(job.personKey, job.accountId);
+  const key = conversationKey(job.personKey, job.phoneNumberId);
   const state = await loadConversationState(redis, key);
   signal.throwIfAborted();
 

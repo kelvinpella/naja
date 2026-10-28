@@ -73,13 +73,16 @@ describe("job carousel builder", () => {
     assert.ok(body.endsWith("...") || body.includes("Tsh: 1"));
   });
 
-  it("keeps card bodies under Meta's 160-char limit", () => {
+  it("keeps card bodies under Meta's 160-char and 2-line-break limits", () => {
     const long = job({
       title: "A".repeat(80),
       description: "B".repeat(500),
       budget: 123456789,
     });
     assert.ok(cardBody(long).length < 160);
+    assert.ok(
+      (cardBody(long).match(/\n/g) ?? []).length <= 2,
+    );
     assert.ok(
       cardBody(job({ description: "C".repeat(500), budget: 150000 })).length <
         160,

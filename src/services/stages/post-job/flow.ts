@@ -22,7 +22,11 @@ export const POST_JOB_FLOW_JSON = {
       title: "Tangaza kazi",
       terminal: false,
       data: {
-        init_values: {
+        // Single-word key: the Kapso SDK rewrites authoring keys to Meta's
+        // wire case, but a plain lowercase key survives unchanged, so the
+        // screen schema, the Form binding, and flow_action_payload.data all
+        // agree on the same name.
+        initial: {
           type: "object",
           __example__: {
             title: "Mpishi wa pilau anahitajika",
@@ -38,7 +42,7 @@ export const POST_JOB_FLOW_JSON = {
           {
             type: "Form",
             name: "details_form",
-            ["init-values"]: "${data.init_values}",
+            ["initValues"]: "${data.initial}",
             children: [
               {
                 type: "TextHeading",
@@ -49,39 +53,39 @@ export const POST_JOB_FLOW_JSON = {
                 label: "Jina la kazi",
                 required: true,
                 name: "title",
-                ["input-type"]: "text",
-                ["max-chars"]: 80,
-                ["helper-text"]: "Mpishi wa pilau anahitajika",
+                ["inputType"]: "text",
+                ["maxChars"]: 80,
+                ["helperText"]: "Mpishi wa pilau anahitajika",
               },
               {
                 type: "TextArea",
                 label: "Maelezo",
                 required: true,
                 name: "description",
-                ["max-length"]: 500,
-                ["helper-text"]: "Eleza kazi kwa kifupi",
+                ["maxLength"]: 500,
+                ["helperText"]: "Eleza kazi kwa kifupi",
               },
               {
                 type: "TextInput",
                 label: "Eneo",
                 required: true,
                 name: "area",
-                ["input-type"]: "text",
-                ["max-chars"]: 80,
-                ["helper-text"]: "Mfano: Mbezi, Dar es Salaam",
+                ["inputType"]: "text",
+                ["maxChars"]: 80,
+                ["helperText"]: "Mfano: Mbezi, Dar es Salaam",
               },
               {
                 type: "TextInput",
                 label: "Bajeti(Tsh)",
                 required: true,
                 name: "budget",
-                ["input-type"]: "number",
-                ["helper-text"]: "Mfano: 50000",
+                ["inputType"]: "number",
+                ["helperText"]: "Mfano: 50000",
               },
               {
                 type: "Footer",
                 label: "Endelea",
-                ["on-click-action"]: {
+                ["onClickAction"]: {
                   name: "navigate",
                   next: { type: "screen", name: "PICHA" },
                   payload: {
@@ -135,22 +139,22 @@ export const POST_JOB_FLOW_JSON = {
                 name: "job_image",
                 label: "Weka picha ya kazi",
                 description: "Mfano: picha ya eneo la kusafishwa. Ukiona picha .HEIC, badili. Weka JPG/PNG",
-                ["photo-source"]: "camera_gallery",
-                ["max-file-size-kb"]: 5120,
-                ["min-uploaded-photos"]: 0,
-                ["max-uploaded-photos"]: 1,
+                ["photoSource"]: "camera_gallery",
+                ["maxFileSizeKb"]: 5120,
+                ["minUploadedPhotos"]: 0,
+                ["maxUploadedPhotos"]: 1,
               },
               {
                 type: "Footer",
                 label: "Tangaza",
-                ["on-click-action"]: {
+                ["onClickAction"]: {
                   name: "complete",
                   payload: {
                     title: "${data.title}",
                     description: "${data.description}",
                     area: "${data.area}",
                     budget: "${data.budget}",
-                    job_image: "${form.job_image}",
+                    jobImage: "${form.job_image}",
                   },
                 },
               },
@@ -163,7 +167,7 @@ export const POST_JOB_FLOW_JSON = {
 };
 
 export function getPostJobFlowId(): string | undefined {
-  return process.env["ZERNIO_TANGAZA_FLOW_ID"];
+  return process.env["KAPSO_TANGAZA_FLOW_ID"];
 }
 
 export type PostJobFlowMedia = {
@@ -184,12 +188,12 @@ export type PostJobSubmit = {
   raw: unknown;
 };
 
-// Uses official @zernio/node SDK via the shared draft helper. Creates a
-// DRAFT and uploads JSON. Never calls publish — stays DRAFT for testing.
+// Uses the official @kapso/whatsapp-cloud-api SDK via the shared draft
+// helper. Creates a DRAFT with its JSON. Never calls publish — stays DRAFT
+// for testing.
 export async function createPostJobDraftFlow(
-  accountId: string,
+  wabaId: string,
   apiKey: string,
-  signal?: AbortSignal,
 ): Promise<{ flowId: string; reused: boolean }> {
   return createDraftFlow(
     {
@@ -198,9 +202,8 @@ export async function createPostJobDraftFlow(
       flowJson: POST_JOB_FLOW_JSON,
       logTag: "post-job-flow",
     },
-    accountId,
+    wabaId,
     apiKey,
-    signal,
   );
 }
 
