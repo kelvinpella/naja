@@ -28,8 +28,7 @@ const kapsoWebhookRoutes: FastifyPluginAsync = async (app) => {
   app.post<{ Body: ParsedKapsoWebhookBody }>(
     "/kapso",
     {
-      preHandler: async (request, reply) =>
-        checkKapsoWebhook(request, reply),
+      preHandler: async (request, reply) => checkKapsoWebhook(request, reply),
     },
     async (request, reply) => {
       const { payload } = request.body;
