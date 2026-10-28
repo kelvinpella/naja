@@ -173,7 +173,6 @@ function makeState(
 
 const silentLogger = {
   info: () => {},
-  warn: () => {},
   error: () => {},
 } as unknown as import("fastify").FastifyBaseLogger;
 
@@ -503,84 +502,14 @@ describe("handleStagedConversation transitions", () => {
     );
   });
 
-  it("tapping Omba fires an AzamPay sandbox checkout and clears the stage", async () => {
-    const { clearAzamPayTokenCache } = await import(
-      "../../src/services/payments/azampay.js"
-    );
-    clearAzamPayTokenCache();
-    process.env["AZAMPAY_APP_NAME"] = "NajaTest";
-    process.env["AZAMPAY_CLIENT_ID"] = "test-client";
-    process.env["AZAMPAY_CLIENT_SECRET"] = "test-secret";
-    const azamPayCalls: string[] = [];
-    const offscreenFetch = globalThis.fetch;
-    globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
-      const url = String(input instanceof Request ? input.url : input);
-      if (url.includes("azampay.co.tz")) {
-        azamPayCalls.push(url);
-        if (url.endsWith("/AppRegistration/GenerateToken")) {
-          return new Response(
-            JSON.stringify({ data: { accessToken: "tok-test" } }),
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          );
-        }
-        return new Response(
-          JSON.stringify({
-            success: true,
-            transactionId: "txn-test",
-            message: "Checkout accepted",
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      }
-      return (offscreenFetch as typeof fetch)(input as never, init);
-    }) as typeof fetch;
-    try {
-      const redis = makeRedis();
-      redis.store.set("k", JSON.stringify(makeState({ stage: "job_detail" })));
-      const state = makeState({ stage: "job_detail" });
-      await handleStagedConversation({
-        job: makeJob({
-          eventId: "evt-apply",
-          interactiveId: "job_apply:11111111-1111-1111-1111-111111111111",
-          senderPhone: "0712345678",
-        }),
-        redis: redis as never,
-        apiKey: "key",
-        logger: silentLogger,
-        signal: AbortSignal.timeout(5000),
-        key: "k",
-        state,
-      });
-
-      assert.deepEqual(azamPayCalls, [
-        "https://authenticator-sandbox.azampay.co.tz/AppRegistration/GenerateToken",
-        "https://sandbox.azampay.co.tz/azampay/mno/checkout",
-      ]);
-      assert.equal(fetchCalls.length, 1);
-      const text = fetchCalls[0].body["text"] as { body: string };
-      assert.ok(text.body.includes("Ombi la malipo limetumwa"));
-      assert.ok(text.body.includes("txn-test"));
-      assert.equal(fetchCalls[0].body["type"], "text");
-      assert.equal(redis.store.get("k"), undefined);
-    } finally {
-      delete process.env["AZAMPAY_APP_NAME"];
-      delete process.env["AZAMPAY_CLIENT_ID"];
-      delete process.env["AZAMPAY_CLIENT_SECRET"];
-    }
-  });
-
-  it("tapping Omba without AzamPay credentials tells the user to retry", async () => {
-    delete process.env["AZAMPAY_APP_NAME"];
-    delete process.env["AZAMPAY_CLIENT_ID"];
-    delete process.env["AZAMPAY_CLIENT_SECRET"];
+  it("tapping Omba shares the poster contact and clears the stage", async () => {
     const redis = makeRedis();
     redis.store.set("k", JSON.stringify(makeState({ stage: "job_detail" })));
     const state = makeState({ stage: "job_detail" });
     await handleStagedConversation({
       job: makeJob({
-        eventId: "evt-apply-nocreds",
+        eventId: "evt-apply",
         interactiveId: "job_apply:11111111-1111-1111-1111-111111111111",
-        senderPhone: "0712345678",
       }),
       redis: redis as never,
       apiKey: "key",
@@ -592,7 +521,9 @@ describe("handleStagedConversation transitions", () => {
 
     assert.equal(fetchCalls.length, 1);
     const text = fetchCalls[0].body["text"] as { body: string };
-    assert.ok(text.body.includes("huduma ya malipo haijawekwa"));
+    assert.ok(text.body.startsWith("✅ Waweza wasiliana"));
+    assert.ok(text.body.includes("Phone:+255712345678"));
+    assert.equal(fetchCalls[0].body["type"], "text");
     assert.equal(redis.store.get("k"), undefined);
   });
 
