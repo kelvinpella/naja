@@ -94,7 +94,7 @@ export async function uploadPostJobImage(
   const rawId = media.id ?? media.media_id;
   const mediaId =
     typeof rawId === "string" ? rawId : typeof rawId === "number" ? String(rawId) : undefined;
-  if (!mediaId) throw new Error("Image media ID missing in Flow response");
+  if (!mediaId) throw new Error("Image media ID missing in Flow response.");
   const kapso = getKapsoClient(opts.apiKey);
   const download = kapso.media.download({
     mediaId,
