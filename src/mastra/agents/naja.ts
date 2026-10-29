@@ -1,6 +1,7 @@
 import { Agent } from "@mastra/core/agent";
 import { Memory } from "@mastra/memory";
 import { memoryStorage } from "../storage.js";
+import { resolveAgentModel } from "../model.js";
 import { najaInstructions } from "./naja-instructions.js";
 
 // Observational Memory compresses long threads into an observation log, so a
@@ -20,6 +21,6 @@ export const najaAgent = new Agent({
   id: "naja",
   name: "Naja",
   instructions: najaInstructions,
-  model: "openai/gpt-6-luna",
+  model: resolveAgentModel(),
   memory: najaMemory,
 });

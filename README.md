@@ -21,11 +21,22 @@ Create a `.env` file in the project root and set the Kapso credentials, the webh
 KAPSO_API_KEY=your-kapso-api-key
 KAPSO_PHONE_NUMBER_ID=your-whatsapp-phone-number-id
 KAPSO_WEBHOOK_SECRET=replace-with-your-webhook-secret
+FREELLMAPI_API_KEY=freellmapi-your-unified-key
 OPENAI_API_KEY=your-openai-api-key
 REDIS_URL=redis://127.0.0.1:6379
 ```
 
-`KAPSO_BUSINESS_ACCOUNT_ID` (the WABA id) is only needed for Flow administration. `KAPSO_API_BASE_URL` is optional and defaults to `https://api.kapso.ai`. Keep `.env` private. The development command loads it automatically. Without `OPENAI_API_KEY` the worker still starts, but every Turn fails.
+`KAPSO_BUSINESS_ACCOUNT_ID` (the WABA id) is only needed for Flow administration. `KAPSO_API_BASE_URL` is optional and defaults to `https://api.kapso.ai`. Keep `.env` private. The development command loads it automatically. Without `FREELLMAPI_API_KEY` or `OPENAI_API_KEY` the worker still starts, but every Turn fails.
+
+## Model
+
+Development routes Turns through [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi), a local router that stacks free provider tiers behind one OpenAI-compatible endpoint:
+
+1. Start the router (the install one-liner runs it on `http://localhost:3001`, see [Using the API](https://github.com/tashfeenahmed/freellmapi#using-the-api)).
+2. Add provider keys on its Keys page.
+3. Copy the unified `freellmapi-…` key into `FREELLMAPI_API_KEY`.
+
+With `FREELLMAPI_API_KEY` set, the agent talks to `http://localhost:3001/v1` and sends the model id `auto`, letting the router choose. `FREELLMAPI_BASE_URL` changes the endpoint and `FREELLMAPI_MODEL` picks a model or routing strategy (`auto:fast`, `auto:smart`, a profile). FreeLLMAPI is for personal experimentation only — unset `FREELLMAPI_API_KEY` to fall back to `openai/gpt-6-luna`.
 
 ## Run locally
 
@@ -71,7 +82,7 @@ Jobs retry up to five times with exponential backoff. Exhausted jobs are copied 
 
 ## Agent
 
-The worker imports the agent directly (`src/mastra/agents/naja.ts`) and runs one Turn per inbound message, so no separate Mastra server is involved. The agent is `openai/gpt-6-luna` with a Swahili-first prompt that mirrors the user's language; it has no tools yet, and it is instructed to say so rather than pretend to search, post, or apply.
+The worker imports the agent directly (`src/mastra/agents/naja.ts`) and runs one Turn per inbound message, so no separate Mastra server is involved. The agent is `openai/gpt-6-luna`, or `auto` through FreeLLMAPI when `FREELLMAPI_API_KEY` is set (see [Model](#model)), with a Swahili-first prompt that mirrors the user's language; it has no tools yet, and it is instructed to say so rather than pretend to search, post, or apply.
 
 Each Person has one conversation for life: the Mastra `resource` and `thread` are both the hashed sender identity, so history survives phone-number changes and Redis restarts. Memory is stored in a local LibSQL file at `.data/mastra.db` (git-ignored), and [Observational Memory](https://mastra.ai/docs/memory/observational-memory) compresses older history into observations so long conversations do not fill the context window. The file is per-worker: run a single worker process, and switch to a shared database before scaling out.
 

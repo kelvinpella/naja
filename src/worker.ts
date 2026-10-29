@@ -18,9 +18,9 @@ async function startWorker(): Promise<void> {
   if (!kapsoApiKey) {
     throw new Error("KAPSO_API_KEY is required for WhatsApp replies");
   }
-  if (!process.env.OPENAI_API_KEY) {
+  if (!process.env.OPENAI_API_KEY && !process.env.FREELLMAPI_API_KEY) {
     logger.warn(
-      "OPENAI_API_KEY is not set: the agent cannot answer until it is added to .env",
+      "Neither FREELLMAPI_API_KEY nor OPENAI_API_KEY is set: the agent cannot answer until one is added to .env",
     );
   }
 
