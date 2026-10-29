@@ -1,16 +1,45 @@
 import { createHash } from "node:crypto";
 import type { WhatsappIncomingMessageJob } from "../queues/whatsapp-events.js";
-import type { KapsoWebhookPayload } from "./kapso-events.js";
+import type { KapsoInboundMessage, KapsoWebhookPayload } from "./kapso-events.js";
 import { normalizePhoneDigits } from "./phone.js";
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
+function asNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function readLocation(
+  message: KapsoInboundMessage,
+): { latitude: number; longitude: number } | undefined {
+  const location = message.location as
+    | { latitude?: unknown; longitude?: unknown }
+    | undefined;
+  const latitude = asNumber(location?.latitude);
+  const longitude = asNumber(location?.longitude);
+  return latitude !== undefined && longitude !== undefined
+    ? { latitude, longitude }
     : undefined;
+}
+
+function readCaption(message: KapsoInboundMessage): string | undefined {
+  const media = message[message.type ?? ""] as
+    | { caption?: unknown; filename?: unknown }
+    | undefined;
+  return asString(media?.caption) ?? asString(media?.filename);
+}
+
+function readInteractiveTitle(
+  message: KapsoInboundMessage,
+): string | undefined {
+  const interactive = message.interactive;
+  return (
+    asString(interactive?.button_reply?.title) ??
+    asString(interactive?.list_reply?.title) ??
+    asString(message.button?.text)
+  );
 }
 
 export function toWhatsappMessageJob(
@@ -19,8 +48,8 @@ export function toWhatsappMessageJob(
   const message = payload.message;
   if (!message) return null;
 
-  // Only inbound customer messages drive the menu. Status events and our own
-  // outbound echoes carry the same message object, so filter by direction.
+  // Status events and our own outbound echoes carry the same message object,
+  // so filter by direction before anything else.
   if (message.kapso?.direction === "outbound") return null;
 
   const eventId = asString(message.id);
@@ -43,24 +72,7 @@ export function toWhatsappMessageJob(
   }
 
   const personKey = createHash("sha256").update(senderIdentity).digest("hex");
-  const interactive = message.interactive;
-  const interactiveType = asString(interactive?.type);
-
-  // Flow submissions arrive twice over: Meta's nfm_reply.response_json and
-  // Kapso's decoded flow_response. Prefer the decoded object.
-  const kapsoFlowResponse = message.kapso?.flow_response;
-  const flowResponseData = asRecord(kapsoFlowResponse);
-  const flowResponseJson =
-    typeof kapsoFlowResponse === "string"
-      ? kapsoFlowResponse
-      : asString(interactive?.nfm_reply?.response_json);
-
-  // Button taps (menu and carousel) arrive as button_reply.id; template
-  // quick replies arrive as the legacy `button.payload`.
-  const tapId =
-    asString(interactive?.button_reply?.id) ??
-    asString(interactive?.list_reply?.id) ??
-    asString(message.button?.payload);
+  const messageType = asString(message.type);
 
   return {
     eventId,
@@ -69,9 +81,10 @@ export function toWhatsappMessageJob(
     recipient: senderPhone || bsuid || senderIdentity,
     recipientType: senderPhone ? "phone" : "bsuid",
     senderPhone: senderPhone || undefined,
-    interactiveId: tapId,
-    interactiveType,
-    flowResponseData,
-    flowResponseJson,
+    text: asString(message.text?.body),
+    messageType,
+    caption: readCaption(message),
+    interactiveTitle: readInteractiveTitle(message),
+    location: readLocation(message),
   };
 }

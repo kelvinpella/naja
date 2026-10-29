@@ -3,11 +3,15 @@ import type { Job } from "bullmq";
 import type { FastifyBaseLogger } from "fastify";
 import type { Redis } from "ioredis";
 import type { WhatsappIncomingMessageJob } from "../queues/whatsapp-events.js";
-import { processWhatsappMessage } from "../services/whatsapp-conversation.js";
+import { generateWhatsappReply } from "../services/whatsapp-agent.js";
+import { sendTypingIndicator } from "../services/kapso-typing-indicator.js";
+import { sendWhatsappReply } from "../services/whatsapp-reply.js";
 
-const PERSON_LOCK_TTL_MS = 60_000;
+// A model turn plus a synchronous Observational Memory pass is far slower than
+// the old menu replies, so the budget and the lock outlive it comfortably.
+const PERSON_LOCK_TTL_MS = 180_000;
 const PERSON_LOCK_RENEW_MS = 15_000;
-const PROCESSING_TIMEOUT_MS = 30_000;
+const PROCESSING_TIMEOUT_MS = 90_000;
 
 const RENEW_LOCK_SCRIPT = `
   if redis.call("GET", KEYS[1]) == ARGV[1] then
@@ -106,8 +110,19 @@ export function createWhatsappEventProcessor({
   logger,
 }: WhatsappEventProcessorOptions) {
   return async (job: Job<WhatsappIncomingMessageJob>): Promise<void> => {
-    await withPersonLock(redis, job.data.personKey, logger, (signal) =>
-      processWhatsappMessage(job.data, redis, kapsoApiKey, logger, signal),
-    );
+    await withPersonLock(redis, job.data.personKey, logger, async (signal) => {
+      // Best effort: a typing bubble that fails must not fail the turn.
+      void sendTypingIndicator(
+        job.data.phoneNumberId,
+        job.data.eventId,
+        kapsoApiKey,
+        logger,
+        signal,
+      ).catch(() => {});
+
+      const reply = await generateWhatsappReply(job.data, signal);
+      signal.throwIfAborted();
+      await sendWhatsappReply(job.data, reply, kapsoApiKey, logger, signal);
+    });
   };
 }

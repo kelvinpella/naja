@@ -1,6 +1,6 @@
 # Naja
 
-Naja is a Fastify API for a WhatsApp-based marketplace connecting Tanzanian households with trusted domestic workers.
+Naja is a Fastify API and BullMQ worker for a WhatsApp-based marketplace connecting Tanzanian households with trusted domestic workers. An AI agent built with [Mastra](https://mastra.ai) answers each inbound message and keeps the conversation in memory.
 
 ## Requirements
 
@@ -15,19 +15,17 @@ Install dependencies:
 npm install
 ```
 
-Create a `.env` file in the project root and set the Kapso credentials plus the webhook secret you register with Kapso:
+Create a `.env` file in the project root and set the Kapso credentials, the webhook secret you register with Kapso, and the OpenAI key the agent uses:
 
 ```env
 KAPSO_API_KEY=your-kapso-api-key
 KAPSO_PHONE_NUMBER_ID=your-whatsapp-phone-number-id
-KAPSO_BUSINESS_ACCOUNT_ID=your-whatsapp-business-account-id
 KAPSO_WEBHOOK_SECRET=replace-with-your-webhook-secret
-KAPSO_FIND_JOB_FLOW_ID=optional-draft-flow-id
-KAPSO_TANGAZA_FLOW_ID=optional-draft-flow-id
+OPENAI_API_KEY=your-openai-api-key
 REDIS_URL=redis://127.0.0.1:6379
 ```
 
-`KAPSO_BUSINESS_ACCOUNT_ID` (the WABA id) is only used when creating Flow drafts. `KAPSO_API_BASE_URL` is optional and defaults to `https://api.kapso.ai`. Keep `.env` private. The development command loads it automatically.
+`KAPSO_BUSINESS_ACCOUNT_ID` (the WABA id) is only needed for Flow administration. `KAPSO_API_BASE_URL` is optional and defaults to `https://api.kapso.ai`. Keep `.env` private. The development command loads it automatically. Without `OPENAI_API_KEY` the worker still starts, but every Turn fails.
 
 ## Run locally
 
@@ -65,15 +63,21 @@ kapso whatsapp webhooks new \
   --secret-key "$KAPSO_WEBHOOK_SECRET"
 ```
 
-The endpoint verifies Kapso's `X-Webhook-Signature` (HMAC-SHA256 hex over the raw request body) and enqueues inbound `whatsapp.message.received` events in the `naja-whatsapp-incoming-messages` BullMQ queue before returning `200`. Outbound echoes and other subscribed events are acknowledged and ignored. A Redis-backed person lock prevents the same sender from being processed concurrently. A SHA-256 hash of the stable WhatsApp Business-Scoped User ID is preferred; the phone number is used when the BSUID is unavailable. Raw sender identifiers and message text are not stored in queue job data. If Redis cannot enqueue a message within three seconds, the endpoint returns `503` so Kapso can retry.
+The endpoint verifies Kapso's `X-Webhook-Signature` (HMAC-SHA256 hex over the raw request body) and enqueues inbound `whatsapp.message.received` events in the `naja-whatsapp-incoming-messages` BullMQ queue before returning `200`. Outbound echoes and other subscribed events are acknowledged and ignored. A Redis-backed person lock prevents the same sender from being processed concurrently. A SHA-256 hash of the stable WhatsApp Business-Scoped User ID is preferred; the phone number is used when the BSUID is unavailable. If Redis cannot enqueue a message within three seconds, the endpoint returns `503` so Kapso can retry.
 
 Sends go through the official `@kapso/whatsapp-cloud-api` SDK against the Kapso proxy. The proxy has no idempotency header, so delivery is at-least-once; each send carries the stable idempotency key in `biz_opaque_callback_data` so a duplicate can be traced to the job that produced it.
 
 Jobs retry up to five times with exponential backoff. Exhausted jobs are copied to the `naja-whatsapp-incoming-messages-dead-letter` queue, and stalled jobs are logged. `SIGINT` and `SIGTERM` close Fastify and gracefully drain the worker.
 
-When a phone has no saved stage, the worker sends a WhatsApp image-header reply-button menu with the options **Tafuta kazi**, **Tangaza kazi**, and **Vigezo na Masharti**. Button responses are associated with the `get_started` stage and temporarily stored in Redis for seven days.
+## Agent
 
-The two conversational Forms are Kapso/Meta Flows kept in `DRAFT`: create them with `npm run flow:create-find-job` and `npm run flow:create-tangaza-job`, then put the printed ids in `KAPSO_FIND_JOB_FLOW_ID` and `KAPSO_TANGAZA_FLOW_ID`. Sends use `mode: "draft"`; this codebase never publishes a Flow.
+The worker imports the agent directly (`src/mastra/agents/naja.ts`) and runs one Turn per inbound message, so no separate Mastra server is involved. The agent is `openai/gpt-6-luna` with a Swahili-first prompt that mirrors the user's language; it has no tools yet, and it is instructed to say so rather than pretend to search, post, or apply.
+
+Each Person has one conversation for life: the Mastra `resource` and `thread` are both the hashed sender identity, so history survives phone-number changes and Redis restarts. Memory is stored in a local LibSQL file at `.data/mastra.db` (git-ignored), and [Observational Memory](https://mastra.ai/docs/memory/observational-memory) compresses older history into observations so long conversations do not fill the context window. The file is per-worker: run a single worker process, and switch to a shared database before scaling out.
+
+Media is not read this round. Images, voice notes, documents, stickers, and locations reach the model as typed placeholders such as `[voice note]` or `[image] caption: "..."`, and the prompt requires the agent to tell the user it can only handle text.
+
+Replies are plain text, split only when they exceed WhatsApp's 4096-character limit, and carry a derived idempotency key in `biz_opaque_callback_data`.
 
 Kapso replies use `KAPSO_API_KEY`. The webhook endpoint uses `KAPSO_WEBHOOK_SECRET`, which must match the secret set on the Kapso webhook. `REDIS_URL` defaults to `redis://127.0.0.1:6379` if omitted.
 
