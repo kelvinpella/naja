@@ -82,9 +82,9 @@ Jobs retry up to five times with exponential backoff. Exhausted jobs are copied 
 
 ## Agent
 
-The worker imports the agent directly (`src/mastra/agents/naja.ts`) and runs one Turn per inbound message, so no separate Mastra server is involved. The agent is `openai/gpt-6-luna`, or `auto` through FreeLLMAPI when `FREELLMAPI_API_KEY` is set (see [Model](#model)), with a Swahili-first prompt that mirrors the user's language; it has no tools yet, and it is instructed to say so rather than pretend to search, post, or apply.
+The worker imports `src/mastra/index.ts` and runs one Turn per inbound message, resolving the agent through that instance (`mastra.getAgent("naja")`) so traces attach, with no separate Mastra server involved. The agent is `openai/gpt-6-luna`, or `auto` through FreeLLMAPI when `FREELLMAPI_API_KEY` is set (see [Model](#model)), with a Swahili-first prompt that mirrors the user's language; it has no tools yet, and it is instructed to say so rather than pretend to search, post, or apply.
 
-Each Person has one conversation for life: the Mastra `resource` and `thread` are both the hashed sender identity, so history survives phone-number changes and Redis restarts. Memory is stored in a local LibSQL file at `.data/mastra.db` (git-ignored), and [Observational Memory](https://mastra.ai/docs/memory/observational-memory) compresses older history into observations so long conversations do not fill the context window. The file is per-worker: run a single worker process, and switch to a shared database before scaling out.
+Each Person has one conversation for life, and the Thread id is the hashed sender identity, so history survives phone-number changes and Redis restarts. Every Person shares one memory `resource` (`naja`), because that is how [Studio](#studio) lists Threads; the Thread is titled with the Person's phone number. Memory is stored in a local LibSQL file at `.data/mastra.db` (git-ignored), and [Observational Memory](https://mastra.ai/docs/memory/observational-memory) compresses older history into observations so long conversations do not fill the context window. The file is per-worker: run a single worker process, and switch to a shared database before scaling out.
 
 Media is not read this round. Images, voice notes, documents, stickers, and locations reach the model as typed placeholders such as `[voice note]` or `[image] caption: "..."`, and the prompt requires the agent to tell the user it can only handle text.
 
@@ -93,3 +93,19 @@ Replies are plain text, split only when they exceed WhatsApp's 4096-character li
 Kapso replies use `KAPSO_API_KEY`. The webhook endpoint uses `KAPSO_WEBHOOK_SECRET`, which must match the secret set on the Kapso webhook. `REDIS_URL` defaults to `redis://127.0.0.1:6379` if omitted.
 
 For local testing, run `npm run dev` first, then run `npm run dev:ngrok` in a second terminal. Register the HTTPS forwarding URL printed by ngrok, followed by `/webhooks/kapso`, using the CLI command above.
+
+## Studio
+
+[Mastra Studio](https://mastra.ai/docs/studio/overview) is a read-only console over what the worker produced. Every conversation starts on WhatsApp, so Studio is for looking, not chatting:
+
+```sh
+npm run studio
+```
+
+Studio reads the same `.data/mastra.db` the worker writes. `src/mastra/storage.ts` resolves that path from the project root rather than the working directory, because `mastra dev` changes directory before loading the app; the path it opened is printed at startup as `Mastra memory: …`, so a split database is visible instead of looking like an empty console. Open <http://127.0.0.1:4111> and pick the `naja` agent.
+
+- **Threads** are listed in the agent sidebar, titled with each Person's full phone number. Opening one shows the Conversation; the **Memory** tab shows the Observational Memory log, token progress bars against the observe/reflect thresholds, and any previous observations.
+- **Observability → Traces** shows one trace per Turn: the model call, memory reads and writes, timings, and token usage. Traces are written to the same database by `MastraStorageExporter`. Metrics dashboards need a separate store (DuckDB) and are not configured.
+- New Threads appear once the worker has created them, and are titled with the Person's phone number when they do. A Thread that predates this carries no title, and Studio labels it with its creation date; `npm run backfill:thread-titles` relabels those by reading the inbound messages Kapso still holds and hashing each sender the way the webhook does. A Person WhatsApp only ever identified by BSUID gets that BSUID as their title, since no phone number exists for them.
+
+Two constraints keep this safe. Studio binds to `127.0.0.1:4111` in `src/mastra/index.ts` — never tunnel it, because its REST API can read every Conversation and write to Threads. And when a Person changes number, the Thread title follows the number they last wrote from; the Thread itself is keyed on the hashed identity, so history is unaffected.

@@ -137,7 +137,7 @@ export function createWhatsappEventProcessor({
 
       let reply: string;
       try {
-        reply = await generateWhatsappReply(job.data, signal);
+        reply = await generateWhatsappReply(job.data, signal, logger);
         // Not every provider honours the abort signal, so a turn that outlived
         // the processing budget counts as failed even when it returns text.
         signal.throwIfAborted();

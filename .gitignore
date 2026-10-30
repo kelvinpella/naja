@@ -2,3 +2,4 @@ node_modules/
 project-idea.md
 .env
 .data/
+.mastra/

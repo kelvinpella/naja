@@ -36,7 +36,14 @@ Whenever you add or update dependencies:
 - Every PR description includes: what changed, why, key behavior/implementation notes, how it was verified (typecheck/tests), and follow-ups if any.
 - Link related issues or specs when they exist.
 
-## 7. Useful command recap
+## 7. Free ports when you are done
+
+- Any server or Studio session you start is your responsibility: stop it before you finish the task. That includes Fastify (`PORT`, default `3000`) and Mastra Studio (`127.0.0.1:4111`).
+- Do not leave a server running in the background across turns or sessions. A port left bound makes the next run fail or silently talk to a stale process.
+- Before starting a server, check the port and clear it instead of layering a second instance on top: `lsof -nP -iTCP:4111 -sTCP:LISTEN`.
+- If a process genuinely has to outlive the session, say so and name the process and port, so the user can stop it.
+
+## 8. Useful command recap
 
 | Command | Purpose |
 | --- | --- |
@@ -45,6 +52,7 @@ Whenever you add or update dependencies:
 | `npm run lint` | Run ESLint checks |
 | `npm run test` | Execute the test suite (if present) |
 | `npm run build` | Production build — do not run during agent sessions |
+| `lsof -nP -iTCP:<port> -sTCP:LISTEN` | Show which process holds a port before starting a server |
 
 ---
 

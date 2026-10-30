@@ -42,6 +42,25 @@ function readInteractiveTitle(
   );
 }
 
+/**
+ * The identity a Person's Thread is keyed on: WhatsApp's business-scoped user
+ * id when there is one, so a phone-number change keeps the same Conversation,
+ * and the digits-only phone otherwise. Exported because scripts that repair
+ * Thread titles must hash identities exactly as inbound messages do.
+ */
+export function personIdentity(input: {
+  bsuid?: string;
+  phone?: string;
+}): string | undefined {
+  const digits = normalizePhoneDigits(input.phone);
+  return input.bsuid ?? (digits || undefined);
+}
+
+/** The Thread id for an identity; the same hash as `personIdentity` callers. */
+export function personKeyFor(identity: string): string {
+  return createHash("sha256").update(identity).digest("hex");
+}
+
 export function toWhatsappMessageJob(
   payload: KapsoWebhookPayload,
 ): WhatsappIncomingMessageJob | null {
@@ -60,7 +79,7 @@ export function toWhatsappMessageJob(
   const bsuid = asString(message.from_user_id);
   // Prefer the stable business-scoped user id so a phone-number change keeps
   // the same conversation; fall back to the phone number.
-  const senderIdentity = bsuid ?? (senderPhone || undefined);
+  const senderIdentity = personIdentity({ bsuid, phone: senderPhone });
 
   if (
     !eventId ||
@@ -71,7 +90,7 @@ export function toWhatsappMessageJob(
     return null;
   }
 
-  const personKey = createHash("sha256").update(senderIdentity).digest("hex");
+  const personKey = personKeyFor(senderIdentity);
   const messageType = asString(message.type);
 
   return {
