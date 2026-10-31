@@ -6,6 +6,7 @@ import type { WhatsappIncomingMessageJob } from "../queues/whatsapp-events.js";
 import { generateWhatsappReply } from "../services/whatsapp-agent.js";
 import { sendTypingIndicator } from "../services/kapso-typing-indicator.js";
 import { sendWhatsappReply } from "../services/whatsapp-reply.js";
+import type { WhatsappReply } from "../services/whatsapp-reply-contract.js";
 
 // A model turn plus a synchronous Observational Memory pass is far slower than
 // the old menu replies, so the budget and the lock outlive it comfortably.
@@ -135,7 +136,7 @@ export function createWhatsappEventProcessor({
         signal,
       ).catch(() => {});
 
-      let reply: string;
+      let reply: WhatsappReply | null;
       try {
         reply = await generateWhatsappReply(job.data, signal, logger);
         // Not every provider honours the abort signal, so a turn that outlived
@@ -152,7 +153,24 @@ export function createWhatsappEventProcessor({
         );
         await sendWhatsappReply(
           job.data,
-          FALLBACK_REPLY,
+          { kind: "text", body: FALLBACK_REPLY },
+          kapsoApiKey,
+          logger,
+          AbortSignal.timeout(FALLBACK_SEND_TIMEOUT_MS),
+        );
+        return;
+      }
+
+      // A Turn that produced only a broken reply envelope has nothing safe to
+      // send, so it gets the same apology as a failed Turn rather than silence.
+      if (!reply) {
+        logger.warn(
+          { eventId: job.data.eventId, personKey: job.data.personKey },
+          "Agent produced no usable reply; sending the fallback reply",
+        );
+        await sendWhatsappReply(
+          job.data,
+          { kind: "text", body: FALLBACK_REPLY },
           kapsoApiKey,
           logger,
           AbortSignal.timeout(FALLBACK_SEND_TIMEOUT_MS),

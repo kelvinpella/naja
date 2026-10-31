@@ -41,7 +41,7 @@ An inbound message that carries no text: an image, voice note, document, sticker
 _Avoid_: attachment, file, media type
 
 **Option**:
-One of the three actions Naja offers a Person: Tafuta kazi, Tangaza kazi, Vigezo na masharti.
+One of the actions Naja offers a Person at a choice point: Tafuta kazi, Tangaza kazi, or Vigezo na masharti.
 _Avoid_: button, menu item, choice
 
 **Open question**:
