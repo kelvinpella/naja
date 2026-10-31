@@ -20,6 +20,14 @@ _Avoid_: channel, room, context
 One inbound message together with the single reply it produces.
 _Avoid_: exchange, round, interaction
 
+**Welcome**:
+The first Turn of a Thread, in which Naja says what it is for and offers the Options.
+_Avoid_: intro, greeting, onboarding
+
+**Resumed Turn**:
+A Turn that opens after a pause long enough for Naja to treat the Thread as returning rather than continuing.
+_Avoid_: session, re-engagement, comeback
+
 **Memory**:
 What Naja carries into a Turn: the recent messages of the Thread and any Observations covering older ones.
 _Avoid_: context window, history buffer, state
@@ -31,6 +39,14 @@ _Avoid_: summary, embedding, recollection
 **Media message**:
 An inbound message that carries no text: an image, voice note, document, sticker, or location.
 _Avoid_: attachment, file, media type
+
+**Option**:
+One of the three actions Naja offers a Person: Tafuta kazi, Tangaza kazi, Vigezo na masharti.
+_Avoid_: button, menu item, choice
+
+**Open question**:
+A question inside Naja's scope that its context cannot answer, left for a human to answer later.
+_Avoid_: ticket, support request, unknown
 
 **Job**:
 A piece of work a household wants done, with a title, description, area, budget, optional image, and skills. Jobs are not yet part of the Conversation.

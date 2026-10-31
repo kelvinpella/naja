@@ -43,7 +43,13 @@ Whenever you add or update dependencies:
 - Before starting a server, check the port and clear it instead of layering a second instance on top: `lsof -nP -iTCP:4111 -sTCP:LISTEN`.
 - If a process genuinely has to outlive the session, say so and name the process and port, so the user can stop it.
 
-## 8. Useful command recap
+## 8. Ask one question at a time
+
+- When a decision is needed, ask a single question and wait for the answer before asking the next.
+- Hold the remaining open questions until that answer lands.
+- Look facts up yourself; decisions are the user's.
+
+## 9. Useful command recap
 
 | Command | Purpose |
 | --- | --- |
