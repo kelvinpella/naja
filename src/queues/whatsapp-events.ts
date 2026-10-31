@@ -28,10 +28,15 @@ export type WhatsappIncomingMessageJob = {
   // Normalized phone number when one is available. BSUID-only contacts
   // leave this unset, so payment/job paths must tolerate a missing number.
   senderPhone?: string;
-  interactiveId?: string;
-  interactiveType?: string;
-  flowResponseData?: Record<string, unknown>;
-  flowResponseJson?: string;
+  // The user's own words, when the message has any. Media carries no text,
+  // so the agent receives a typed placeholder instead (see message-input).
+  text?: string;
+  // WhatsApp message type: text, image, audio, document, sticker, location,
+  // interactive, button, reaction, ...
+  messageType?: string;
+  caption?: string;
+  interactiveTitle?: string;
+  location?: { latitude: number; longitude: number };
 };
 
 export type WhatsappIncomingMessageDeadLetterJob = {

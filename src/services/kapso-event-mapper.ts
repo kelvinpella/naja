@@ -1,16 +1,64 @@
 import { createHash } from "node:crypto";
 import type { WhatsappIncomingMessageJob } from "../queues/whatsapp-events.js";
-import type { KapsoWebhookPayload } from "./kapso-events.js";
+import type { KapsoInboundMessage, KapsoWebhookPayload } from "./kapso-events.js";
 import { normalizePhoneDigits } from "./phone.js";
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
+function asNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function readLocation(
+  message: KapsoInboundMessage,
+): { latitude: number; longitude: number } | undefined {
+  const location = message.location as
+    | { latitude?: unknown; longitude?: unknown }
+    | undefined;
+  const latitude = asNumber(location?.latitude);
+  const longitude = asNumber(location?.longitude);
+  return latitude !== undefined && longitude !== undefined
+    ? { latitude, longitude }
     : undefined;
+}
+
+function readCaption(message: KapsoInboundMessage): string | undefined {
+  const media = message[message.type ?? ""] as
+    | { caption?: unknown; filename?: unknown }
+    | undefined;
+  return asString(media?.caption) ?? asString(media?.filename);
+}
+
+function readInteractiveTitle(
+  message: KapsoInboundMessage,
+): string | undefined {
+  const interactive = message.interactive;
+  return (
+    asString(interactive?.button_reply?.title) ??
+    asString(interactive?.list_reply?.title) ??
+    asString(message.button?.text)
+  );
+}
+
+/**
+ * The identity a Person's Thread is keyed on: WhatsApp's business-scoped user
+ * id when there is one, so a phone-number change keeps the same Conversation,
+ * and the digits-only phone otherwise. Exported because scripts that repair
+ * Thread titles must hash identities exactly as inbound messages do.
+ */
+export function personIdentity(input: {
+  bsuid?: string;
+  phone?: string;
+}): string | undefined {
+  const digits = normalizePhoneDigits(input.phone);
+  return input.bsuid ?? (digits || undefined);
+}
+
+/** The Thread id for an identity; the same hash as `personIdentity` callers. */
+export function personKeyFor(identity: string): string {
+  return createHash("sha256").update(identity).digest("hex");
 }
 
 export function toWhatsappMessageJob(
@@ -19,8 +67,8 @@ export function toWhatsappMessageJob(
   const message = payload.message;
   if (!message) return null;
 
-  // Only inbound customer messages drive the menu. Status events and our own
-  // outbound echoes carry the same message object, so filter by direction.
+  // Status events and our own outbound echoes carry the same message object,
+  // so filter by direction before anything else.
   if (message.kapso?.direction === "outbound") return null;
 
   const eventId = asString(message.id);
@@ -31,7 +79,7 @@ export function toWhatsappMessageJob(
   const bsuid = asString(message.from_user_id);
   // Prefer the stable business-scoped user id so a phone-number change keeps
   // the same conversation; fall back to the phone number.
-  const senderIdentity = bsuid ?? (senderPhone || undefined);
+  const senderIdentity = personIdentity({ bsuid, phone: senderPhone });
 
   if (
     !eventId ||
@@ -42,25 +90,8 @@ export function toWhatsappMessageJob(
     return null;
   }
 
-  const personKey = createHash("sha256").update(senderIdentity).digest("hex");
-  const interactive = message.interactive;
-  const interactiveType = asString(interactive?.type);
-
-  // Flow submissions arrive twice over: Meta's nfm_reply.response_json and
-  // Kapso's decoded flow_response. Prefer the decoded object.
-  const kapsoFlowResponse = message.kapso?.flow_response;
-  const flowResponseData = asRecord(kapsoFlowResponse);
-  const flowResponseJson =
-    typeof kapsoFlowResponse === "string"
-      ? kapsoFlowResponse
-      : asString(interactive?.nfm_reply?.response_json);
-
-  // Button taps (menu and carousel) arrive as button_reply.id; template
-  // quick replies arrive as the legacy `button.payload`.
-  const tapId =
-    asString(interactive?.button_reply?.id) ??
-    asString(interactive?.list_reply?.id) ??
-    asString(message.button?.payload);
+  const personKey = personKeyFor(senderIdentity);
+  const messageType = asString(message.type);
 
   return {
     eventId,
@@ -69,9 +100,10 @@ export function toWhatsappMessageJob(
     recipient: senderPhone || bsuid || senderIdentity,
     recipientType: senderPhone ? "phone" : "bsuid",
     senderPhone: senderPhone || undefined,
-    interactiveId: tapId,
-    interactiveType,
-    flowResponseData,
-    flowResponseJson,
+    text: asString(message.text?.body),
+    messageType,
+    caption: readCaption(message),
+    interactiveTitle: readInteractiveTitle(message),
+    location: readLocation(message),
   };
 }

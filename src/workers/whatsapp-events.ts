@@ -3,11 +3,30 @@ import type { Job } from "bullmq";
 import type { FastifyBaseLogger } from "fastify";
 import type { Redis } from "ioredis";
 import type { WhatsappIncomingMessageJob } from "../queues/whatsapp-events.js";
-import { processWhatsappMessage } from "../services/whatsapp-conversation.js";
+import { generateWhatsappReply } from "../services/whatsapp-agent.js";
+import { sendTypingIndicator } from "../services/kapso-typing-indicator.js";
+import { sendWhatsappReply } from "../services/whatsapp-reply.js";
 
-const PERSON_LOCK_TTL_MS = 60_000;
+// A model turn plus a synchronous Observational Memory pass is far slower than
+// the old menu replies, so the budget and the lock outlive it comfortably.
+const PERSON_LOCK_TTL_MS = 180_000;
 const PERSON_LOCK_RENEW_MS = 15_000;
-const PROCESSING_TIMEOUT_MS = 30_000;
+const PROCESSING_TIMEOUT_MS = 90_000;
+const FALLBACK_SEND_TIMEOUT_MS = 15_000;
+
+// When the model turn fails (every free tier rate-limited, upstream outage,
+// or the processing budget running out) the person is still waiting on
+// WhatsApp, so they get this instead of silence. The job then completes
+// rather than retrying: a retry would spend another budget on a model that
+// already failed and could deliver the apology twice.
+const FALLBACK_REPLY = [
+  "Samahani, kuna hitilafu ya muda kwenye mfumo. Tafadhali jaribu tena baada ya dakika chache.",
+  "Sorry, something went wrong on our side. Please try again in a few minutes.",
+].join("\n\n");
+
+// Aborting with this error means another worker owns the sender and is
+// already answering, so this Turn must not send anything.
+class SenderLockLostError extends Error {}
 
 const RENEW_LOCK_SCRIPT = `
   if redis.call("GET", KEYS[1]) == ARGV[1] then
@@ -72,7 +91,7 @@ async function withPersonLock(
         .eval(RENEW_LOCK_SCRIPT, 1, key, token, PERSON_LOCK_TTL_MS)
         .then((result) => {
           if (Number(result) !== 1) {
-            controller.abort(new Error("WhatsApp sender lock was lost"));
+            controller.abort(new SenderLockLostError("WhatsApp sender lock was lost"));
           }
         })
         .catch((error: unknown) => controller.abort(error));
@@ -106,8 +125,42 @@ export function createWhatsappEventProcessor({
   logger,
 }: WhatsappEventProcessorOptions) {
   return async (job: Job<WhatsappIncomingMessageJob>): Promise<void> => {
-    await withPersonLock(redis, job.data.personKey, logger, (signal) =>
-      processWhatsappMessage(job.data, redis, kapsoApiKey, logger, signal),
-    );
+    await withPersonLock(redis, job.data.personKey, logger, async (signal) => {
+      // Best effort: a typing bubble that fails must not fail the turn.
+      void sendTypingIndicator(
+        job.data.phoneNumberId,
+        job.data.eventId,
+        kapsoApiKey,
+        logger,
+        signal,
+      ).catch(() => {});
+
+      let reply: string;
+      try {
+        reply = await generateWhatsappReply(job.data, signal, logger);
+        // Not every provider honours the abort signal, so a turn that outlived
+        // the processing budget counts as failed even when it returns text.
+        signal.throwIfAborted();
+      } catch (error) {
+        if (signal.reason instanceof SenderLockLostError) {
+          throw error;
+        }
+
+        logger.error(
+          { err: error, eventId: job.data.eventId, personKey: job.data.personKey },
+          "Agent turn failed; sending the fallback reply",
+        );
+        await sendWhatsappReply(
+          job.data,
+          FALLBACK_REPLY,
+          kapsoApiKey,
+          logger,
+          AbortSignal.timeout(FALLBACK_SEND_TIMEOUT_MS),
+        );
+        return;
+      }
+
+      await sendWhatsappReply(job.data, reply, kapsoApiKey, logger, signal);
+    });
   };
 }

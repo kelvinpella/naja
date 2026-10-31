@@ -13,6 +13,7 @@ function basePayload() {
       from: "255712345678",
       from_user_id: "US.abc123",
       type: "text",
+      text: { body: "Habari, nahitaji msaidizi" },
       kapso: { direction: "inbound" },
     },
   };
@@ -26,9 +27,10 @@ describe("toWhatsappMessageJob identity", () => {
   });
 
   it("sends to the wa_id and keeps digits only", () => {
+    const payload = basePayload();
     const job = toWhatsappMessageJob({
-      ...basePayload(),
-      message: { ...basePayload().message, from: "+255 712 345 678" },
+      ...payload,
+      message: { ...payload.message, from: "+255 712 345 678" },
     });
     assert.equal(job?.recipient, "255712345678");
     assert.equal(job?.recipientType, "phone");
@@ -84,125 +86,67 @@ describe("toWhatsappMessageJob identity", () => {
   });
 });
 
-describe("toWhatsappMessageJob tap routing", () => {
-  it("reads menu button taps from button_reply", () => {
+describe("toWhatsappMessageJob content", () => {
+  it("carries the user's text", () => {
+    const job = toWhatsappMessageJob(basePayload());
+    assert.equal(job?.text, "Habari, nahitaji msaidizi");
+    assert.equal(job?.messageType, "text");
+  });
+
+  it("carries an image caption and type, not a text body", () => {
+    const payload = basePayload();
+    const job = toWhatsappMessageJob({
+      ...payload,
+      message: {
+        ...payload.message,
+        type: "image",
+        text: undefined,
+        image: { id: "media-1", caption: "Huyu ni msaidizi wangu" },
+      },
+    });
+    assert.equal(job?.messageType, "image");
+    assert.equal(job?.text, undefined);
+    assert.equal(job?.caption, "Huyu ni msaidizi wangu");
+  });
+
+  it("keeps the type of media with no caption", () => {
+    const payload = basePayload();
+    const job = toWhatsappMessageJob({
+      ...payload,
+      message: { ...payload.message, type: "audio", text: undefined },
+    });
+    assert.equal(job?.messageType, "audio");
+    assert.equal(job?.caption, undefined);
+  });
+
+  it("captures location coordinates", () => {
+    const payload = basePayload();
+    const job = toWhatsappMessageJob({
+      ...payload,
+      message: {
+        ...payload.message,
+        type: "location",
+        text: undefined,
+        location: { latitude: -6.7924, longitude: 39.2083 },
+      },
+    });
+    assert.deepEqual(job?.location, { latitude: -6.7924, longitude: 39.2083 });
+  });
+
+  it("captures the title of a tapped button", () => {
     const payload = basePayload();
     const job = toWhatsappMessageJob({
       ...payload,
       message: {
         ...payload.message,
         type: "interactive",
+        text: undefined,
         interactive: {
           type: "button_reply",
-          button_reply: { id: "tafuta_kazi", title: "Tafuta kazi" },
+          button_reply: { id: "old_menu", title: "Tafuta kazi" },
         },
       },
     });
-    assert.equal(job?.interactiveId, "tafuta_kazi");
-    assert.equal(job?.interactiveType, "button_reply");
-  });
-
-  it("captures carousel quick-reply taps from button_reply", () => {
-    const payload = basePayload();
-    const job = toWhatsappMessageJob({
-      ...payload,
-      message: {
-        ...payload.message,
-        type: "interactive",
-        interactive: {
-          type: "button_reply",
-          button_reply: { id: "job_more:mixed:9", title: "Zaidi" },
-        },
-      },
-    });
-    assert.equal(job?.interactiveId, "job_more:mixed:9");
-  });
-
-  it("falls back to the legacy button payload", () => {
-    const payload = basePayload();
-    const job = toWhatsappMessageJob({
-      ...payload,
-      message: {
-        ...payload.message,
-        type: "button",
-        button: { payload: "get_started", text: "Rudi" },
-      },
-    });
-    assert.equal(job?.interactiveId, "get_started");
-  });
-
-  it("prefers button_reply when both tap fields are present", () => {
-    const payload = basePayload();
-    const job = toWhatsappMessageJob({
-      ...payload,
-      message: {
-        ...payload.message,
-        button: { payload: "job_more:mixed:9" },
-        interactive: {
-          type: "button_reply",
-          button_reply: { id: "get_started" },
-        },
-      },
-    });
-    assert.equal(job?.interactiveId, "get_started");
-  });
-});
-
-describe("toWhatsappMessageJob flow responses", () => {
-  it("captures nfm_reply response_json", () => {
-    const payload = basePayload();
-    const job = toWhatsappMessageJob({
-      ...payload,
-      message: {
-        ...payload.message,
-        type: "interactive",
-        interactive: {
-          type: "nfm_reply",
-          nfm_reply: {
-            name: "flow",
-            body: "Sent",
-            response_json: '{"keyword":"mpishi"}',
-          },
-        },
-      },
-    });
-    assert.equal(job?.interactiveType, "nfm_reply");
-    assert.equal(job?.flowResponseJson, '{"keyword":"mpishi"}');
-    assert.equal(job?.flowResponseData, undefined);
-  });
-
-  it("prefers Kapso's decoded flow_response object", () => {
-    const payload = basePayload();
-    const job = toWhatsappMessageJob({
-      ...payload,
-      message: {
-        ...payload.message,
-        type: "interactive",
-        interactive: {
-          type: "nfm_reply",
-          nfm_reply: { response_json: '{"keyword":"mpishi"}' },
-        },
-        kapso: {
-          direction: "inbound",
-          flow_response: { keyword: "mpishi" },
-        },
-      },
-    });
-    assert.deepEqual(job?.flowResponseData, { keyword: "mpishi" });
-  });
-
-  it("accepts a stringified flow_response", () => {
-    const payload = basePayload();
-    const job = toWhatsappMessageJob({
-      ...payload,
-      message: {
-        ...payload.message,
-        kapso: {
-          direction: "inbound",
-          flow_response: '{"keyword":"dereva"}',
-        },
-      },
-    });
-    assert.equal(job?.flowResponseJson, '{"keyword":"dereva"}');
+    assert.equal(job?.interactiveTitle, "Tafuta kazi");
   });
 });

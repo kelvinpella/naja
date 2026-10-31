@@ -9,9 +9,10 @@
     "dev:worker": "node --env-file-if-exists=.env --import tsx --watch src/worker.ts",
     "dev:ngrok": "ngrok http 3000",
     "dev:redis": "redis-server --dir /tmp",
+    "studio": "mastra dev",
+    "backfill:thread-resource": "node --env-file-if-exists=.env --import tsx src/scripts/backfill-thread-resource.ts",
+    "backfill:thread-titles": "node --env-file-if-exists=.env --import tsx src/scripts/backfill-thread-titles.ts",
     "redis:clear": "node --env-file-if-exists=.env --import tsx src/scripts/clear-redis.ts",
-    "flow:create-find-job": "node --env-file-if-exists=.env --import tsx src/scripts/create-find-job-flow.ts",
-    "flow:create-tangaza-job": "node --env-file-if-exists=.env --import tsx src/scripts/create-tangaza-job-flow.ts",
     "build": "tsc",
     "start": "node dist/app.js",
     "start:worker": "node dist/worker.js",
@@ -21,17 +22,20 @@
   "type": "module",
   "dependencies": {
     "@kapso/whatsapp-cloud-api": "^0.4.0",
-    "@supabase/supabase-js": "^2.117.2",
+    "@mastra/core": "^1.80.0",
+    "@mastra/libsql": "^1.27.1",
+    "@mastra/memory": "^1.39.1",
+    "@mastra/observability": "^1.22.0",
     "bullmq": "^6.3.11",
     "fastify": "^5.12.4",
     "fastify-plugin": "^6.0.0",
-    "heic-convert": "^2.1.0",
     "ioredis": "^6.0.0",
-    "sharp": "^0.35.5"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@tsconfig/node26": "^26.0.1",
     "@types/node": "^26.5.1",
+    "mastra": "^1.36.0",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2"
   }

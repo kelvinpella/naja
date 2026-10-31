@@ -10,30 +10,23 @@ import {
   whatsappEventJobId,
 } from "./queues/whatsapp-events.js";
 import { createWhatsappEventProcessor } from "./workers/whatsapp-events.js";
-import { connectJobsTimingToLogger } from "./services/jobs/job-timing.js";
-import { listJobs, setJobsCacheRedis } from "./services/jobs/jobs.js";
 
 async function startWorker(): Promise<void> {
   const loggerHost = Fastify({ logger: true });
   const logger = loggerHost.log;
-  connectJobsTimingToLogger(logger);
   const kapsoApiKey = process.env.KAPSO_API_KEY;
   if (!kapsoApiKey) {
     throw new Error("KAPSO_API_KEY is required for WhatsApp replies");
+  }
+  if (!process.env.OPENAI_API_KEY && !process.env.FREELLMAPI_API_KEY) {
+    logger.warn(
+      "Neither FREELLMAPI_API_KEY nor OPENAI_API_KEY is set: the agent cannot answer until one is added to .env",
+    );
   }
 
   const redis = await connectRedis(
     process.env.REDIS_URL ?? "redis://127.0.0.1:6379",
   );
-  setJobsCacheRedis(redis);
-  // Prime the database connection and the first list page so the
-  // first real reply skips cold-start setup. Best effort: a cold
-  // Supabase at boot must not stop the worker.
-  try {
-    await listJobs(0);
-  } catch (error) {
-    logger.warn({ err: error }, "Job list warmup failed, continuing cold");
-  }
   const deadLetterQueue = new Queue<WhatsappIncomingMessageDeadLetterJob>(
     WHATSAPP_INCOMING_MESSAGES_DEAD_LETTER_QUEUE,
     {
@@ -56,8 +49,10 @@ async function startWorker(): Promise<void> {
     (job: Job<WhatsappIncomingMessageJob>) => processor(job),
     {
       connection: redis,
-        concurrency: 8,
-      lockDuration: 60_000,
+      concurrency: 8,
+      // Must stay above the processing budget in workers/whatsapp-events.ts,
+      // otherwise a long model turn is treated as stalled and retried.
+      lockDuration: 180_000,
     },
   );
 

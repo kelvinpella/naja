@@ -1,6 +1,4 @@
-// Shared fakes for service tests. See Fastify testing guidance: Test Factory Pattern.
 import type { WhatsappIncomingMessageJob } from "../../src/queues/whatsapp-events.js";
-import type { ConversationState } from "../../src/services/whatsapp-conversation-state.js";
 
 export type FakeRedis = {
   store: Map<string, string>;
@@ -30,18 +28,8 @@ export function makeJob(
     recipient: "255712345678",
     recipientType: "phone",
     senderPhone: "255712345678",
-    ...overrides,
-  };
-}
-
-export function makeState(
-  overrides: Partial<ConversationState> = {},
-): ConversationState {
-  return {
-    stage: "get_started",
-    promptSent: true,
-    promptEventId: "evt-0",
-    responses: [],
+    messageType: "text",
+    text: "Habari",
     ...overrides,
   };
 }
@@ -49,4 +37,5 @@ export function makeState(
 export const silentLogger = {
   info: () => {},
   error: () => {},
+  warn: () => {},
 } as unknown as import("fastify").FastifyBaseLogger;
