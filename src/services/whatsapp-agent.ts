@@ -8,6 +8,11 @@ import {
 } from "../mastra/thread-identity.js";
 import type { WhatsappIncomingMessageJob } from "../queues/whatsapp-events.js";
 import { toAgentInput } from "./whatsapp-message-input.js";
+import {
+  replySchema,
+  toWhatsappReply,
+  type WhatsappReply,
+} from "./whatsapp-reply-contract.js";
 
 /**
  * Runs one agent turn for an inbound message. `personKey` is the Thread, so a
@@ -18,7 +23,7 @@ export async function generateWhatsappReply(
   job: WhatsappIncomingMessageJob,
   signal: AbortSignal,
   logger: FastifyBaseLogger,
-): Promise<string> {
+): Promise<WhatsappReply | null> {
   const input = toAgentInput(job);
 
   try {
@@ -39,7 +44,14 @@ export async function generateWhatsappReply(
   const result = await mastra.getAgent("naja").generate(input, {
     memory: { thread: job.personKey, resource: MEMORY_RESOURCE_ID },
     abortSignal: signal,
+    // Native response_format where the model supports it, injected JSON where
+    // it does not: the FreeLLMAPI router can pick a different model per Turn,
+    // so the choice cannot be made once at boot.
+    structuredOutput: {
+      schema: replySchema,
+      jsonPromptInjection: "auto",
+    },
   });
 
-  return result.text.trim();
+  return toWhatsappReply(result.object, result.text);
 }

@@ -18,6 +18,7 @@ Whenever you add or update dependencies:
 
 - Consult the relevant Fastify, TypeScript, and other project skills when working on related tasks.
 - Use TypeScript for all new utilities.
+- Whenever an agent has skills or tools attached, name them in that agent's instructions (e.g. `src/mastra/agents/naja-instructions.ts`) and say when to reach for them. Mastra injects the skill catalogue and the tool list into the prompt, but the instructions are where the model learns that a capability exists and what it is for — an unnamed skill goes unused.
 
 ## 4. Prefer official SDKs over raw HTTP
 

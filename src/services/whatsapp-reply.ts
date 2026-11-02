@@ -2,8 +2,14 @@ import { createHash } from "node:crypto";
 import type { FastifyBaseLogger } from "fastify";
 import type { WhatsappIncomingMessageJob } from "../queues/whatsapp-events.js";
 import { getKapsoClient, recipientTarget, withAbort } from "./kapso-client.js";
+import {
+  locationRequestButton,
+  type WhatsappReply,
+} from "./whatsapp-reply-contract.js";
 
 // Meta rejects text bodies over 4096 characters, so longer replies are split.
+// Interactive messages have no splitting option: the reply schema keeps them
+// inside Meta's limits, and a reply that does not fit is sent as text instead.
 export const MAX_REPLY_LENGTH = 4096;
 
 function lastBreakAt(text: string, limit: number): number {
@@ -39,34 +45,92 @@ function replyCallbackData(eventId: string, part: number): string {
   return `naja-reply-${hash}-${part}`;
 }
 
+/**
+ * Sends the Turn's single reply. Interactive replies go out whole, in one
+ * message; text replies are split only when they exceed Meta's 4096 limit.
+ */
 export async function sendWhatsappReply(
   job: WhatsappIncomingMessageJob,
-  body: string,
+  reply: WhatsappReply,
   apiKey: string,
   logger: FastifyBaseLogger,
   signal: AbortSignal,
 ): Promise<number> {
-  const parts = splitReply(body);
-  if (parts.length === 0) {
-    logger.warn({ eventId: job.eventId }, "Agent produced an empty reply");
-    return 0;
-  }
-
   const kapso = getKapsoClient(apiKey);
-  let sent = 0;
+  const target = { phoneNumberId: job.phoneNumberId, ...recipientTarget(job) };
+  const callbackData = replyCallbackData(job.eventId, 0);
 
-  for (const [index, part] of parts.entries()) {
-    await withAbort(
-      kapso.messages.sendText({
-        phoneNumberId: job.phoneNumberId,
-        ...recipientTarget(job),
-        body: part,
-        bizOpaqueCallbackData: replyCallbackData(job.eventId, index),
-      }),
-      signal,
-    );
-    sent += 1;
+  switch (reply.kind) {
+    case "text": {
+      const parts = splitReply(reply.body);
+      if (parts.length === 0) {
+        logger.warn({ eventId: job.eventId }, "Agent produced an empty reply");
+        return 0;
+      }
+
+      let sent = 0;
+      for (const [index, part] of parts.entries()) {
+        await withAbort(
+          kapso.messages.sendText({
+            ...target,
+            body: part,
+            bizOpaqueCallbackData: replyCallbackData(job.eventId, index),
+          }),
+          signal,
+        );
+        sent += 1;
+      }
+
+      return sent;
+    }
+
+    case "buttons":
+      await withAbort(
+        kapso.messages.sendInteractiveButtons({
+          ...target,
+          bodyText: reply.body,
+          buttons: reply.buttons,
+          bizOpaqueCallbackData: callbackData,
+        }),
+        signal,
+      );
+      return 1;
+
+    case "list":
+      await withAbort(
+        kapso.messages.sendInteractiveList({
+          ...target,
+          bodyText: reply.body,
+          buttonText: reply.buttonText,
+          sections: [{ rows: reply.rows }],
+          bizOpaqueCallbackData: callbackData,
+        }),
+        signal,
+      );
+      return 1;
+
+    case "cta_url":
+      await withAbort(
+        kapso.messages.sendInteractiveCtaUrl({
+          ...target,
+          bodyText: reply.body,
+          parameters: { displayText: reply.displayText, url: reply.url },
+          bizOpaqueCallbackData: callbackData,
+        }),
+        signal,
+      );
+      return 1;
+
+    case "location_request":
+      await withAbort(
+        kapso.messages.sendInteractiveLocationRequest({
+          ...target,
+          bodyText: reply.body,
+          parameters: { requestMessage: locationRequestButton(reply) },
+          bizOpaqueCallbackData: callbackData,
+        }),
+        signal,
+      );
+      return 1;
   }
-
-  return sent;
 }
