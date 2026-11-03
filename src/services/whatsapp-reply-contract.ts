@@ -71,6 +71,25 @@ const replySchemaByKind = [
 
   z.object({
     kind: z
+      .literal("flow")
+      .describe(
+        "Sends the post job Flow, a WhatsApp form. Use it only when the person wants to post a job: the Flow asks for the title, description, area, budget and an optional photo. Do not ask those questions in chat first.",
+      ),
+    body: z
+      .string()
+      .trim()
+      .min(1)
+      .max(MAX_INTERACTIVE_BODY_LENGTH)
+      .describe(
+        "The message shown above the Flow button. It must stand on its own: if the Flow cannot be sent, only this text goes out.",
+      ),
+    flow: z
+      .enum(["post_job"])
+      .describe("Which Flow to send. post_job is the only one that exists."),
+  }),
+
+  z.object({
+    kind: z
       .literal("list")
       .describe(
         "A tappable list opened by one button. Use it when there are four to ten choices — kinds of work, a set of areas.",
@@ -179,6 +198,10 @@ function withNumberedChoices(body: string, titles: string[]): string {
 export function renderReplyText(reply: WhatsappReply): string {
   switch (reply.kind) {
     case "text":
+      return reply.body;
+    case "flow":
+      // A Flow cannot be rendered as text, so the body is all that can be sent
+      // instead; it is written to stand on its own.
       return reply.body;
     case "buttons":
       return withNumberedChoices(

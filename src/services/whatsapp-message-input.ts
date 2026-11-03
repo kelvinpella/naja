@@ -35,8 +35,11 @@ export function toAgentInput(job: WhatsappIncomingMessageJob): string {
     case "reaction":
       return "[reaction to an earlier message]";
     case "interactive":
-      return job.interactiveTitle
-        ? `[tapped option] ${job.interactiveTitle}`
+      if (job.interactiveTitle) return `[tapped option] ${job.interactiveTitle}`;
+      // A completion whose token is not ours still reaches the agent; say what
+      // it is rather than pretending it was a button tap.
+      return job.flowResponse !== undefined
+        ? "[completed a form]"
         : "[tapped option]";
     case "button":
       return job.interactiveTitle

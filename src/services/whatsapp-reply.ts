@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import type { FastifyBaseLogger } from "fastify";
 import type { WhatsappIncomingMessageJob } from "../queues/whatsapp-events.js";
+import {
+  getPostJobFlowId,
+  POST_JOB_FLOW_CTA,
+  POST_JOB_FLOW_START_SCREEN,
+  postJobFlowToken,
+  type PostJobFields,
+} from "./flows/post-job-flow.js";
 import { getKapsoClient, recipientTarget, withAbort } from "./kapso-client.js";
 import {
   locationRequestButton,
@@ -46,6 +53,80 @@ function replyCallbackData(eventId: string, part: number): string {
 }
 
 /**
+ * Sends the post job Flow. Two callers: the model, whose `flow` reply carries
+ * only a body, and the failed-Posting path, which prefills the Form from the
+ * Submission so the Person does not retype it (ADR 0007).
+ *
+ * A missing Flow id or a rejected send falls back to the body as text: a
+ * broken Flow must never take the conversation down with it.
+ */
+export async function sendPostJobFlow(
+  job: WhatsappIncomingMessageJob,
+  { body, prefill }: { body: string; prefill?: PostJobFields },
+  apiKey: string,
+  logger: FastifyBaseLogger,
+  signal: AbortSignal,
+): Promise<number> {
+  const flowId = getPostJobFlowId();
+  if (!flowId) {
+    logger.warn(
+      { eventId: job.eventId },
+      "Flow id is not configured; sending the body as text instead",
+    );
+    return sendWhatsappReply(
+      job,
+      { kind: "text", body },
+      apiKey,
+      logger,
+      signal,
+    );
+  }
+
+  const kapso = getKapsoClient(apiKey);
+  const target = { phoneNumberId: job.phoneNumberId, ...recipientTarget(job) };
+
+  try {
+    await withAbort(
+      kapso.messages.sendInteractiveFlow({
+        ...target,
+        bodyText: body,
+        parameters: {
+          flowId,
+          flowCta: POST_JOB_FLOW_CTA,
+          // Draft-only: this codebase never publishes the Flow.
+          mode: "draft",
+          flowToken: postJobFlowToken(job.personKey),
+          flowAction: "navigate",
+          // The DETAILS screen reads these as `${data.initValues}`.
+          flowActionPayload: {
+            screen: POST_JOB_FLOW_START_SCREEN,
+            ...(prefill ? { data: { initValues: prefill } } : {}),
+          },
+        },
+        bizOpaqueCallbackData: replyCallbackData(job.eventId, 0),
+      }),
+      signal,
+    );
+    return 1;
+  } catch (error) {
+    signal.throwIfAborted();
+    // Flow sends depend on WABA/Flow health (e.g. Meta's integrity block);
+    // a text reply keeps the conversation working when the Flow cannot.
+    logger.warn(
+      { err: error, eventId: job.eventId },
+      "Flow send failed; sending the body as text instead",
+    );
+    return sendWhatsappReply(
+      job,
+      { kind: "text", body },
+      apiKey,
+      logger,
+      signal,
+    );
+  }
+}
+
+/**
  * Sends the Turn's single reply. Interactive replies go out whole, in one
  * message; text replies are split only when they exceed Meta's 4096 limit.
  */
@@ -83,6 +164,9 @@ export async function sendWhatsappReply(
 
       return sent;
     }
+
+    case "flow":
+      return sendPostJobFlow(job, { body: reply.body }, apiKey, logger, signal);
 
     case "buttons":
       await withAbort(

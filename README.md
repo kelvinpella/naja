@@ -21,12 +21,16 @@ Create a `.env` file in the project root and set the Kapso credentials, the webh
 KAPSO_API_KEY=your-kapso-api-key
 KAPSO_PHONE_NUMBER_ID=your-whatsapp-phone-number-id
 KAPSO_WEBHOOK_SECRET=replace-with-your-webhook-secret
+KAPSO_BUSINESS_ACCOUNT_ID=your-waba-id
+KAPSO_POST_JOB_FLOW_ID=the-draft-flow-id
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your-anon-key
 FREELLMAPI_API_KEY=freellmapi-your-unified-key
 OPENAI_API_KEY=your-openai-api-key
 REDIS_URL=redis://127.0.0.1:6379
 ```
 
-`KAPSO_BUSINESS_ACCOUNT_ID` (the WABA id) is only needed for Flow administration. `KAPSO_API_BASE_URL` is optional and defaults to `https://api.kapso.ai`. Keep `.env` private. The development command loads it automatically. Without `FREELLMAPI_API_KEY` or `OPENAI_API_KEY` the worker still starts, but every Turn fails.
+`KAPSO_BUSINESS_ACCOUNT_ID` (the WABA id) is only needed for Flow administration. `KAPSO_POST_JOB_FLOW_ID` is the id printed by `npm run flows:post-job` (see [Post job Flow](#post-job-flow)). `KAPSO_API_BASE_URL` is optional and defaults to `https://api.kapso.ai`. Keep `.env` private. The development command loads it automatically. Without `FREELLMAPI_API_KEY` or `OPENAI_API_KEY` the worker still starts, but every Turn fails.
 
 ## Model
 
@@ -82,7 +86,7 @@ Jobs retry up to five times with exponential backoff. Exhausted jobs are copied 
 
 ## Agent
 
-The worker imports `src/mastra/index.ts` and runs one Turn per inbound message, resolving the agent through that instance (`mastra.getAgent("naja")`) so traces attach, with no separate Mastra server involved. The agent is `openai/gpt-6-luna`, or `auto` through FreeLLMAPI when `FREELLMAPI_API_KEY` is set (see [Model](#model)), with a Swahili-first prompt that mirrors the user's language; it has no tools yet, and it is instructed to say so rather than pretend to search, post, or apply.
+The worker imports `src/mastra/index.ts` and runs one Turn per inbound message, resolving the agent through that instance (`mastra.getAgent("naja")`) so traces attach, with no separate Mastra server involved. The agent is `openai/gpt-6-luna`, or `auto` through FreeLLMAPI when `FREELLMAPI_API_KEY` is set (see [Model](#model)), with a Swahili-first prompt that mirrors the user's language; it has no tools yet, and it is instructed to say so rather than pretend to search or apply. The one action it can take is sending the post job Flow (see [Post job Flow](#post-job-flow)).
 
 Each Person has one conversation for life, and the Thread id is the hashed sender identity, so history survives phone-number changes and Redis restarts. Every Person shares one memory `resource` (`naja`), because that is how [Studio](#studio) lists Threads; the Thread is titled with the Person's phone number. Memory is stored in a local LibSQL file at `.data/mastra.db` (git-ignored), and [Observational Memory](https://mastra.ai/docs/memory/observational-memory) compresses older history into observations so long conversations do not fill the context window. The file is per-worker: run a single worker process, and switch to a shared database before scaling out.
 
@@ -93,6 +97,30 @@ Replies are plain text, split only when they exceed WhatsApp's 4096-character li
 Kapso replies use `KAPSO_API_KEY`. The webhook endpoint uses `KAPSO_WEBHOOK_SECRET`, which must match the secret set on the Kapso webhook. `REDIS_URL` defaults to `redis://127.0.0.1:6379` if omitted.
 
 For local testing, run `npm run dev` first, then run `npm run dev:ngrok` in a second terminal. Register the HTTPS forwarding URL printed by ngrok, followed by `/webhooks/kapso`, using the CLI command above.
+
+## Post job Flow
+
+Posting a job is a WhatsApp Flow, not a chat: when a Person says they want to post a job, the model replies with the `flow` shape and `sendWhatsappReply` sends the draft Flow named `naja_post_job`, resolving its id from `KAPSO_POST_JOB_FLOW_ID`. Deploy it once (draft only — this codebase never publishes it):
+
+```sh
+npm run flows:post-job
+```
+
+The script deploys `naja_post_job` as a draft, reuses it by name if it already exists, prints `KAPSO_POST_JOB_FLOW_ID=…`, and refuses to run without `KAPSO_BUSINESS_ACCOUNT_ID` and `KAPSO_API_KEY`. Put the id in `.env` and keep the Flow in draft mode: the sender always sends it with `mode: "draft"`.
+
+The Flow has two screens: title, description, area and budget, then one optional photo. When the Person finishes it, `src/services/whatsapp-flow-completion.ts` reads the completion back from Kapso — Meta's webhook carries only `interactive.type: "nfm_reply"`, with no token and no answers — and the worker then routes it on the `post_job:` prefix of the `flow_token`, handing it to `src/services/jobs/post-job-intake.ts` — no model call. The intake validates the Submission, enqueues a Posting on the `naja-postings` queue, sends the receipt (`✅ Tumepokea tangazo lako: …`), and records both sides of the exchange in the Thread's Memory. It releases the person lock there: nothing else waits on the photo or on Supabase.
+
+`src/workers/postings.ts` runs each Posting through the `post-job` workflow in `src/mastra/workflows/post-job.ts` (visible in Studio), then reports the outcome:
+
+1. **moderate** — an automatic check of the text and the photo. `src/services/jobs/moderation.ts` is a placeholder that always passes; the photo is downloaded here and its bytes discarded, so they never enter workflow state.
+2. **publish** — uploads the photo to the public `job_images` bucket and inserts the Job into Supabase `jobs` with `reviewed: true`. The column is the visibility gate, so publishing is what sets it; the codebase no longer waits for a human to flip it.
+3. **report** — the worker, not a step: sends `🎉 … limechapishwa` and appends the outcome to Memory. It never throws, so a failed send cannot publish the same Job twice.
+
+A Posting is attempted three times with backoff. When the third fails, the Person gets one apology whose button opens the same Flow prefilled with what they typed — the photo is the one thing they must pick again — and any image already uploaded is deleted. The prefill rides on `flow_action_payload.data`, which the DETAILS screen reads as `${data.initValues}`; that path is documented by Meta and valid against the Flow JSON, but has not been confirmed against a live draft Flow yet.
+
+If `KAPSO_POST_JOB_FLOW_ID` is unset, or Meta rejects the send, the reply falls back to plain text instead of failing the Turn. A completion whose `flow_token` is still missing or not ours after the read-back is answered by the agent as an ordinary message; a read-back that fails outright is retried, and after the last attempt the Person is asked to try again. The photo is stored as it arrived — no conversion — with a 5 MB cap, and a missing photo simply leaves `job_image` null.
+
+The `jobs` table and the `job_images` bucket are expected to pre-date this repo: no migration creates them. `SUPABASE_URL` and `SUPABASE_ANON_KEY` are required for the submission path.
 
 ## Studio
 

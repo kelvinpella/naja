@@ -1,19 +1,32 @@
-import { randomUUID } from "node:crypto";
-import type { Job } from "bullmq";
+import type { Job, Queue } from "bullmq";
 import type { FastifyBaseLogger } from "fastify";
 import type { Redis } from "ioredis";
 import type { WhatsappIncomingMessageJob } from "../queues/whatsapp-events.js";
-import { generateWhatsappReply } from "../services/whatsapp-agent.js";
+import type { PostingJob } from "../queues/postings.js";
+import { isPostJobFlowToken } from "../services/flows/post-job-flow.js";
+import {
+  handlePostJobSubmission,
+  PostingEnqueueError,
+} from "../services/jobs/post-job-intake.js";
+import { SenderLockLostError, withPersonLock } from "../services/person-lock.js";
 import { sendTypingIndicator } from "../services/kapso-typing-indicator.js";
+import {
+  FlowCompletionUnavailableError,
+  hydrateFlowCompletion,
+  isFlowCompletion,
+} from "../services/whatsapp-flow-completion.js";
+import { generateWhatsappReply } from "../services/whatsapp-agent.js";
 import { sendWhatsappReply } from "../services/whatsapp-reply.js";
 import type { WhatsappReply } from "../services/whatsapp-reply-contract.js";
 
-// A model turn plus a synchronous Observational Memory pass is far slower than
-// the old menu replies, so the budget and the lock outlive it comfortably.
-const PERSON_LOCK_TTL_MS = 180_000;
-const PERSON_LOCK_RENEW_MS = 15_000;
 const PROCESSING_TIMEOUT_MS = 90_000;
 const FALLBACK_SEND_TIMEOUT_MS = 15_000;
+
+// Sent when a Submission never reached the Posting queue, after every retry:
+// the only failure where the job really will not be published. A receipt that
+// failed to send is not that — its Posting will still report the outcome.
+const NOT_QUEUED_REPLY =
+  "Samahani, imeshindikana kutangaza kazi. Tafadhali jaribu tena.";
 
 // When the model turn fails (every free tier rate-limited, upstream outage,
 // or the processing budget running out) the person is still waiting on
@@ -25,160 +38,166 @@ const FALLBACK_REPLY = [
   "Sorry, something went wrong on our side. Please try again in a few minutes.",
 ].join("\n\n");
 
-// Aborting with this error means another worker owns the sender and is
-// already answering, so this Turn must not send anything.
-class SenderLockLostError extends Error {}
-
-const RENEW_LOCK_SCRIPT = `
-  if redis.call("GET", KEYS[1]) == ARGV[1] then
-    return redis.call("PEXPIRE", KEYS[1], ARGV[2])
-  end
-  return 0
-`;
-
-const RELEASE_LOCK_SCRIPT = `
-  if redis.call("GET", KEYS[1]) == ARGV[1] then
-    return redis.call("DEL", KEYS[1])
-  end
-  return 0
-`;
-
-function personLockKey(personKey: string): string {
-  return `naja:whatsapp-event-lock:${personKey}`;
-}
-
-function wait(milliseconds: number, signal: AbortSignal): Promise<void> {
-  signal.throwIfAborted();
-
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", abort);
-      resolve();
-    }, milliseconds);
-    const abort = () => {
-      clearTimeout(timer);
-      reject(signal.reason);
-    };
-    signal.addEventListener("abort", abort, { once: true });
-  });
-}
-
-async function withPersonLock(
-  redis: Redis,
-  personKey: string,
-  logger: FastifyBaseLogger,
-  run: (signal: AbortSignal) => Promise<void>,
-): Promise<void> {
-  const key = personLockKey(personKey);
-  const token = randomUUID();
-  const controller = new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(new Error("WhatsApp event processing timed out")),
-    PROCESSING_TIMEOUT_MS,
-  );
-  let lockAcquired = false;
-  let renewal: ReturnType<typeof setInterval> | undefined;
-
-  try {
-    while (
-      (await redis.set(key, token, "PX", PERSON_LOCK_TTL_MS, "NX")) !== "OK"
-    ) {
-      await wait(100, controller.signal);
-    }
-    lockAcquired = true;
-
-    renewal = setInterval(() => {
-      void redis
-        .eval(RENEW_LOCK_SCRIPT, 1, key, token, PERSON_LOCK_TTL_MS)
-        .then((result) => {
-          if (Number(result) !== 1) {
-            controller.abort(new SenderLockLostError("WhatsApp sender lock was lost"));
-          }
-        })
-        .catch((error: unknown) => controller.abort(error));
-    }, PERSON_LOCK_RENEW_MS);
-    renewal.unref();
-
-    await run(controller.signal);
-  } finally {
-    clearTimeout(timeout);
-    if (renewal) clearInterval(renewal);
-
-    if (lockAcquired) {
-      try {
-        await redis.eval(RELEASE_LOCK_SCRIPT, 1, key, token);
-      } catch (error) {
-        logger.error({ err: error }, "Failed to release WhatsApp sender lock");
-      }
-    }
-  }
+/** Whether BullMQ will run this job again after the current attempt. */
+function hasAttemptsLeft(job: Job<WhatsappIncomingMessageJob>): boolean {
+  return job.attemptsMade + 1 < (job.opts.attempts ?? 1);
 }
 
 export type WhatsappEventProcessorOptions = {
   redis: Redis;
   kapsoApiKey: string;
   logger: FastifyBaseLogger;
+  postings: Queue<PostingJob>;
 };
 
 export function createWhatsappEventProcessor({
   redis,
   kapsoApiKey,
   logger,
+  postings,
 }: WhatsappEventProcessorOptions) {
-  return async (job: Job<WhatsappIncomingMessageJob>): Promise<void> => {
-    await withPersonLock(redis, job.data.personKey, logger, async (signal) => {
-      // Best effort: a typing bubble that fails must not fail the turn.
-      void sendTypingIndicator(
-        job.data.phoneNumberId,
-        job.data.eventId,
-        kapsoApiKey,
+  /**
+   * A fixed message, sent on its own budget: callers use it exactly when the
+   * Turn's signal may already be aborted, so it cannot borrow that signal.
+   */
+  const sendFixedText = (
+    incoming: WhatsappIncomingMessageJob,
+    body: string,
+  ): Promise<number> =>
+    sendWhatsappReply(
+      incoming,
+      { kind: "text", body },
+      kapsoApiKey,
+      logger,
+      AbortSignal.timeout(FALLBACK_SEND_TIMEOUT_MS),
+    );
+
+  /** The conversational path: one model Turn, one reply. */
+  const answerWithModel = async (
+    incoming: WhatsappIncomingMessageJob,
+    signal: AbortSignal,
+  ): Promise<void> => {
+    let reply: WhatsappReply | null;
+    try {
+      reply = await generateWhatsappReply(incoming, signal, logger);
+      // Not every provider honours the abort signal, so a turn that outlived
+      // the processing budget counts as failed even when it returns text.
+      signal.throwIfAborted();
+    } catch (error) {
+      if (signal.reason instanceof SenderLockLostError) throw error;
+
+      logger.error(
+        { err: error, eventId: incoming.eventId, personKey: incoming.personKey },
+        "Agent turn failed; sending the fallback reply",
+      );
+      await sendFixedText(incoming, FALLBACK_REPLY);
+      return;
+    }
+
+    // A Turn that produced only a broken reply envelope has nothing safe to
+    // send, so it gets the same apology as a failed Turn rather than silence.
+    if (!reply) {
+      logger.warn(
+        { eventId: incoming.eventId, personKey: incoming.personKey },
+        "Agent produced no usable reply; sending the fallback reply",
+      );
+      await sendFixedText(incoming, FALLBACK_REPLY);
+      return;
+    }
+
+    await sendWhatsappReply(incoming, reply, kapsoApiKey, logger, signal);
+  };
+
+  /**
+   * A Flow completion is a data path, not a Turn: it is answered by code and
+   * never reaches the model (ADR 0006). It queues a Posting and gets out of
+   * the way, so the receipt is not waiting on the photo, the insert or
+   * moderation (ADR 0007).
+   */
+  const handleFlowCompletion = async (
+    job: Job<WhatsappIncomingMessageJob>,
+    signal: AbortSignal,
+  ): Promise<void> => {
+    try {
+      // Kapso forwards Meta's stripped-down completion, so the token and the
+      // answers are read back here, before anything is sent.
+      const incoming = await hydrateFlowCompletion(job.data, {
+        apiKey: kapsoApiKey,
         logger,
         signal,
-      ).catch(() => {});
+      });
 
-      let reply: WhatsappReply | null;
-      try {
-        reply = await generateWhatsappReply(job.data, signal, logger);
-        // Not every provider honours the abort signal, so a turn that outlived
-        // the processing budget counts as failed even when it returns text.
-        signal.throwIfAborted();
-      } catch (error) {
-        if (signal.reason instanceof SenderLockLostError) {
-          throw error;
+      if (!isPostJobFlowToken(incoming.flowToken)) {
+        // Somebody else's Flow, or a completion with no answers: nothing to
+        // queue, but the Person still deserves the model's help.
+        logger.warn(
+          { eventId: job.data.eventId, flowToken: incoming.flowToken },
+          "Flow completion is not the post job Flow; handing it to the model",
+        );
+        await answerWithModel(incoming, signal);
+        return;
+      }
+
+      await handlePostJobSubmission({
+        job: incoming,
+        apiKey: kapsoApiKey,
+        logger,
+        signal,
+        postings,
+      });
+    } catch (error) {
+      if (signal.reason instanceof SenderLockLostError) throw error;
+
+      // Retrying is only useful while BullMQ has attempts left; the last
+      // attempt is where someone has to say something.
+      if (hasAttemptsLeft(job)) throw error;
+
+      if (
+        !(error instanceof PostingEnqueueError) &&
+        !(error instanceof FlowCompletionUnavailableError)
+      ) {
+        // The Posting is queued and will report its own outcome, so an
+        // apology here would contradict the message that is coming.
+        logger.error(
+          { err: error, eventId: job.data.eventId, jobId: job.id },
+          "Post job receipt failed after every attempt; the Posting still runs",
+        );
+        return;
+      }
+
+      logger.error(
+        { err: error, eventId: job.data.eventId, jobId: job.id },
+        "Post job submission never reached the queue; sending the apology",
+      );
+      await sendFixedText(job.data, NOT_QUEUED_REPLY);
+    }
+  };
+
+  return async (job: Job<WhatsappIncomingMessageJob>): Promise<void> => {
+    await withPersonLock({
+      redis,
+      personKey: job.data.personKey,
+      logger,
+      timeoutMs: PROCESSING_TIMEOUT_MS,
+      run: async (signal) => {
+        // Best effort: a typing bubble that fails must not fail the turn.
+        void sendTypingIndicator(
+          job.data.phoneNumberId,
+          job.data.eventId,
+          kapsoApiKey,
+          logger,
+          signal,
+        ).catch(() => {});
+
+        const isCompletion =
+          isFlowCompletion(job.data) || isPostJobFlowToken(job.data.flowToken);
+        if (isCompletion) {
+          await handleFlowCompletion(job, signal);
+          return;
         }
 
-        logger.error(
-          { err: error, eventId: job.data.eventId, personKey: job.data.personKey },
-          "Agent turn failed; sending the fallback reply",
-        );
-        await sendWhatsappReply(
-          job.data,
-          { kind: "text", body: FALLBACK_REPLY },
-          kapsoApiKey,
-          logger,
-          AbortSignal.timeout(FALLBACK_SEND_TIMEOUT_MS),
-        );
-        return;
-      }
-
-      // A Turn that produced only a broken reply envelope has nothing safe to
-      // send, so it gets the same apology as a failed Turn rather than silence.
-      if (!reply) {
-        logger.warn(
-          { eventId: job.data.eventId, personKey: job.data.personKey },
-          "Agent produced no usable reply; sending the fallback reply",
-        );
-        await sendWhatsappReply(
-          job.data,
-          { kind: "text", body: FALLBACK_REPLY },
-          kapsoApiKey,
-          logger,
-          AbortSignal.timeout(FALLBACK_SEND_TIMEOUT_MS),
-        );
-        return;
-      }
-
-      await sendWhatsappReply(job.data, reply, kapsoApiKey, logger, signal);
+        await answerWithModel(job.data, signal);
+      },
     });
   };
 }

@@ -133,6 +133,69 @@ describe("toWhatsappMessageJob content", () => {
     assert.deepEqual(job?.location, { latitude: -6.7924, longitude: 39.2083 });
   });
 
+  it("carries a Flow completion's token and parsed payload", () => {
+    const payload = basePayload();
+    const job = toWhatsappMessageJob({
+      ...payload,
+      message: {
+        ...payload.message,
+        type: "interactive",
+        text: undefined,
+        interactive: {
+          type: "nfm_reply",
+          nfm_reply: {
+            name: "naja_post_job",
+            response_json: JSON.stringify({ title: "Mpishi", budget: "50000" }),
+          },
+        },
+        kapso: { direction: "inbound", flow_token: "post_job:person-1" },
+      },
+    });
+    assert.equal(job?.messageType, "interactive");
+    assert.equal(job?.flowToken, "post_job:person-1");
+    assert.deepEqual(job?.flowResponse, {
+      title: "Mpishi",
+      budget: "50000",
+    });
+    assert.equal(job?.interactiveTitle, undefined);
+  });
+
+  it("keeps a Flow payload that Kapso already parsed", () => {
+    const payload = basePayload();
+    const job = toWhatsappMessageJob({
+      ...payload,
+      message: {
+        ...payload.message,
+        type: "interactive",
+        text: undefined,
+        interactive: { type: "nfm_reply", nfm_reply: {} },
+        kapso: {
+          direction: "inbound",
+          flow_token: "post_job:person-1",
+          flow_response: { area: "Mbezi" },
+        },
+      },
+    });
+    assert.deepEqual(job?.flowResponse, { area: "Mbezi" });
+  });
+
+  it("marks a completion as nfm_reply so it can be read back", () => {
+    const payload = basePayload();
+    const job = toWhatsappMessageJob({
+      ...payload,
+      message: {
+        ...payload.message,
+        type: "interactive",
+        text: undefined,
+        // Meta's webhook carries no answers and no token: only the type.
+        interactive: { type: "nfm_reply" },
+      },
+    });
+    assert.equal(job?.interactiveType, "nfm_reply");
+    assert.equal(job?.flowResponse, undefined);
+    assert.equal(job?.flowToken, undefined);
+  });
+
   it("captures the title of a tapped button", () => {
     const payload = basePayload();
     const job = toWhatsappMessageJob({
@@ -148,5 +211,6 @@ describe("toWhatsappMessageJob content", () => {
       },
     });
     assert.equal(job?.interactiveTitle, "Tafuta kazi");
+    assert.equal(job?.interactiveType, "button_reply");
   });
 });

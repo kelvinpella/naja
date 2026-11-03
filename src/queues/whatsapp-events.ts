@@ -36,6 +36,14 @@ export type WhatsappIncomingMessageJob = {
   messageType?: string;
   caption?: string;
   interactiveTitle?: string;
+  // `nfm_reply` for a completed Flow, `button_reply`/`list_reply` for a tap.
+  // Kapso's webhook carries the Flow's answers nowhere, so this is what tells
+  // the worker it has to read the completion back (see whatsapp-flow-completion).
+  interactiveType?: string;
+  // A completed WhatsApp Flow. `flowToken` is the token we set when sending
+  // it, which is how the worker knows a completion is the post job Flow's.
+  flowToken?: string;
+  flowResponse?: unknown;
   location?: { latitude: number; longitude: number };
 };
 
