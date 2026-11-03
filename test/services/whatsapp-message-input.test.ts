@@ -61,6 +61,20 @@ describe("toAgentInput", () => {
     );
   });
 
+  it("describes a Flow completion that is not ours instead of a tap", () => {
+    assert.equal(
+      toAgentInput(
+        makeJob({
+          text: undefined,
+          messageType: "interactive",
+          flowToken: "find_job:person-1",
+          flowResponse: { keyword: "mpishi" },
+        }),
+      ),
+      "[completed a form]",
+    );
+  });
+
   it("falls back to the raw type for anything unrecognised", () => {
     assert.equal(
       toAgentInput(makeJob({ text: undefined, messageType: "contacts" })),

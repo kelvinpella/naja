@@ -43,6 +43,22 @@ function readInteractiveTitle(
 }
 
 /**
+ * A Flow completion carries its payload twice: Kapso's `flow_response` and
+ * Meta's `interactive.nfm_reply.response_json`, one of them often as a JSON
+ * string. Return it parsed when possible so callers never re-parse.
+ */
+function readFlowResponse(message: KapsoInboundMessage): unknown {
+  const raw =
+    message.kapso?.flow_response ?? message.interactive?.nfm_reply?.response_json;
+  if (typeof raw !== "string") return raw;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return raw;
+  }
+}
+
+/**
  * The identity a Person's Thread is keyed on: WhatsApp's business-scoped user
  * id when there is one, so a phone-number change keeps the same Conversation,
  * and the digits-only phone otherwise. Exported because scripts that repair
@@ -104,6 +120,12 @@ export function toWhatsappMessageJob(
     messageType,
     caption: readCaption(message),
     interactiveTitle: readInteractiveTitle(message),
+    interactiveType: asString(message.interactive?.type),
+    // Both are usually absent: Kapso forwards Meta's webhook, where a Flow
+    // completion is only `interactive.type: "nfm_reply"`. The worker reads the
+    // answers back from Kapso (see whatsapp-flow-completion).
+    flowToken: asString(message.kapso?.flow_token),
+    flowResponse: readFlowResponse(message),
     location: readLocation(message),
   };
 }

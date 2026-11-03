@@ -49,8 +49,32 @@ A question inside Naja's scope that its context cannot answer, left for a human 
 _Avoid_: ticket, support request, unknown
 
 **Job**:
-A piece of work a household wants done, with a title, description, area, budget, optional image, and skills. Jobs are not yet part of the Conversation.
+A piece of work a household wants done, with a title, description, area, budget, optional image, and skills. A Job becomes visible to others when it is published, and is looked at by a person only if Moderation flags it.
 _Avoid_: gig, posting, listing
+
+**Publication**:
+The moment a Job becomes visible to others, and the only thing that makes it appear in listings. A Person is told when their Job reaches it, and never before.
+_Avoid_: approval, going live, activation
+
+**Tangaza kazi**:
+The Option through which a Person posts a Job; code calls it `post_job`. It opens Naja's job Form, not a chat.
+_Avoid_: post job menu, job wizard
+
+**Submission**:
+What a Person enters in the job Form, handed to Naja in one piece when they finish it. A Submission is moderated, then published as a Job, unless something goes wrong on the way.
+_Avoid_: response, payload, form entry
+
+**Posting**:
+The processing of one Submission, from the receipt Naja sends back to the Job it produces. A Posting either publishes a Job or ends in failure; a Person never sees the word.
+_Avoid_: job run, pipeline, task
+
+**Moderation**:
+An automatic check that a Posting's text and photo are acceptable before the Job is published.
+_Avoid_: filter, screening, review
+
+**Review**:
+A person's check of a flagged Posting, before any decision is made about it.
+_Avoid_: moderation, approval, vetting
 
 **Domestic worker**:
 A person who provides household work through Naja: house helps, cooks, gardeners, drivers, cleaners, security guards, and fundis.

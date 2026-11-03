@@ -34,6 +34,24 @@ describe("replySchema", () => {
     assert.equal(parsed.success, false);
   });
 
+  it("accepts the post job Flow shape", () => {
+    const parsed = replySchema.safeParse({
+      kind: "flow",
+      body: "Sawa, jaza fomu hii kuanza kutangaza kazi yako.",
+      flow: "post_job",
+    });
+    assert.equal(parsed.success, true);
+  });
+
+  it("rejects a Flow the codebase does not know how to send", () => {
+    const parsed = replySchema.safeParse({
+      kind: "flow",
+      body: "Sawa.",
+      flow: "some_other_flow",
+    });
+    assert.equal(parsed.success, false);
+  });
+
   it("rejects a body over the interactive limit so the Turn degrades to text", () => {
     const parsed = replySchema.safeParse({
       ...welcome,
@@ -62,6 +80,15 @@ describe("renderReplyText", () => {
       ],
     };
     assert.equal(renderReplyText(reply), "Ni kazi gani?\n\n1. Upishi\n2. Usafi wa nyumba");
+  });
+
+  it("falls back to the Flow's body when the Flow cannot be sent", () => {
+    const reply: WhatsappReply = {
+      kind: "flow",
+      body: "Sawa, jaza fomu hii kuanza kutangaza kazi yako.",
+      flow: "post_job",
+    };
+    assert.equal(renderReplyText(reply), reply.body);
   });
 
   it("keeps a plain text reply as it is", () => {

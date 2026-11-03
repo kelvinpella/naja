@@ -6,6 +6,7 @@ import {
 } from "@mastra/observability";
 import { najaAgent } from "./agents/naja.js";
 import { memoryStorage } from "./storage.js";
+import { postJobWorkflow } from "./workflows/post-job.js";
 
 // The agent runs as a library inside the BullMQ worker; this instance exists so
 // the same wiring is visible to Mastra Studio and to future tools. Going
@@ -13,6 +14,9 @@ import { memoryStorage } from "./storage.js";
 // observability config, so `mastra.getAgent("naja")` is the traced path.
 export const mastra = new Mastra({
   agents: { naja: najaAgent },
+  // Posting a job runs as a workflow, so each moderation-and-publish run is
+  // inspectable in Studio next to the Turn that triggered it.
+  workflows: { postJob: postJobWorkflow },
   storage: memoryStorage,
   // Studio serves the console and an unauthenticated REST API on this port,
   // including agent-generate and memory-write routes. Loopback only: a tunnel

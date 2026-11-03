@@ -9,7 +9,9 @@ import {
   type WhatsappIncomingMessageJob,
   whatsappEventJobId,
 } from "./queues/whatsapp-events.js";
+import { POSTINGS_QUEUE, type PostingJob } from "./queues/postings.js";
 import { createWhatsappEventProcessor } from "./workers/whatsapp-events.js";
+import { createPostingProcessor } from "./workers/postings.js";
 
 async function startWorker(): Promise<void> {
   const loggerHost = Fastify({ logger: true });
@@ -38,10 +40,14 @@ async function startWorker(): Promise<void> {
     },
   );
   const pendingDeadLetterWrites = new Set<Promise<void>>();
+  const postingsQueue = new Queue<PostingJob>(POSTINGS_QUEUE, {
+    connection: redis,
+  });
   const processor = createWhatsappEventProcessor({
     redis,
     kapsoApiKey,
     logger,
+    postings: postingsQueue,
   });
 
   const worker = new Worker<WhatsappIncomingMessageJob>(
@@ -100,6 +106,29 @@ async function startWorker(): Promise<void> {
     pendingDeadLetterWrites.add(write);
   });
 
+  // Postings are mostly waiting on HTTP (a media download, Supabase), so a
+  // handful can run at once; each one is bounded by its workflow, not by the
+  // 90s Turn budget.
+  const postingsWorker = new Worker<PostingJob>(
+    POSTINGS_QUEUE,
+    createPostingProcessor({ kapsoApiKey, logger }),
+    {
+      connection: redis,
+      concurrency: 4,
+      lockDuration: 60_000,
+    },
+  );
+
+  postingsWorker.on("failed", (job, error) => {
+    logger.error(
+      { err: error, jobId: job?.id, eventId: job?.data.eventId },
+      "Posting job failed",
+    );
+  });
+  postingsWorker.on("error", (error) => {
+    logger.error({ err: error }, "Posting worker error");
+  });
+
   worker.on("stalled", (jobId) => {
     logger.warn({ queue: WHATSAPP_INCOMING_MESSAGES_QUEUE, jobId }, "WhatsApp incoming-message job stalled");
   });
@@ -109,7 +138,10 @@ async function startWorker(): Promise<void> {
 
   const close = async () => {
     const closeErrors: unknown[] = [];
-    const workerCloseResults = await Promise.allSettled([worker.close()]);
+    const workerCloseResults = await Promise.allSettled([
+      worker.close(),
+      postingsWorker.close(),
+    ]);
     closeErrors.push(
       ...workerCloseResults.flatMap((result) =>
         result.status === "rejected" ? [result.reason] : [],
@@ -118,6 +150,7 @@ async function startWorker(): Promise<void> {
     await Promise.allSettled([...pendingDeadLetterWrites]);
 
     for (const closeResource of [
+      () => postingsQueue.close(),
       () => deadLetterQueue.close(),
       () => redis.quit(),
     ]) {
@@ -150,13 +183,19 @@ async function startWorker(): Promise<void> {
   process.once("SIGTERM", () => shutdown("SIGTERM"));
 
   try {
-    await worker.waitUntilReady();
+    await Promise.all([
+      worker.waitUntilReady(),
+      postingsWorker.waitUntilReady(),
+    ]);
   } catch (error) {
     await close();
     throw error;
   }
 
-  logger.info({ queue: WHATSAPP_INCOMING_MESSAGES_QUEUE }, "WhatsApp incoming-message worker ready");
+  logger.info(
+    { queues: [WHATSAPP_INCOMING_MESSAGES_QUEUE, POSTINGS_QUEUE] },
+    "WhatsApp incoming-message and posting workers ready",
+  );
 }
 
 void startWorker().catch((error: unknown) => {
