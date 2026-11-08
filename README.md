@@ -25,12 +25,13 @@ KAPSO_BUSINESS_ACCOUNT_ID=your-waba-id
 KAPSO_POST_JOB_FLOW_ID=the-draft-flow-id
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_ANON_KEY=your-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 FREELLMAPI_API_KEY=freellmapi-your-unified-key
 OPENAI_API_KEY=your-openai-api-key
 REDIS_URL=redis://127.0.0.1:6379
 ```
 
-`KAPSO_BUSINESS_ACCOUNT_ID` (the WABA id) is only needed for Flow administration. `KAPSO_POST_JOB_FLOW_ID` is the id printed by `npm run flows:post-job` (see [Post job Flow](#post-job-flow)). `KAPSO_API_BASE_URL` is optional and defaults to `https://api.kapso.ai`. Keep `.env` private. The development command loads it automatically. Without `FREELLMAPI_API_KEY` or `OPENAI_API_KEY` the worker still starts, but every Turn fails.
+`KAPSO_BUSINESS_ACCOUNT_ID` (the WABA id) is only needed for Flow administration. `KAPSO_POST_JOB_FLOW_ID` is the id printed by `npm run flows:post-job` (see [Post job Flow](#post-job-flow)). `KAPSO_API_BASE_URL` is optional and defaults to `https://api.kapso.ai`. Keep `.env` private. The development command loads it automatically. Without `FREELLMAPI_API_KEY` or `OPENAI_API_KEY` the worker still starts, but every Turn fails. `SUPABASE_SERVICE_ROLE_KEY` is only read by maintenance scripts such as `npm run jobs:embed`; it bypasses RLS, so never ship it to a client.
 
 ## Model
 
@@ -110,11 +111,11 @@ Jobs are embedded on publication, in the same insert. If that fails, the Job is 
 npm run jobs:embed
 ```
 
-It only selects rows where `embedding is null`, so it is safe to run repeatedly. Changing the embedding model or `EMBEDDING_DIMENSIONS` means re-embedding the corpus.
+It only selects rows where `embedding is null`, so it is safe to run repeatedly. It runs with `SUPABASE_SERVICE_ROLE_KEY`: RLS lets the anon key read and insert Jobs but turns an update into a `0`-row no-op, which would make the backfill re-embed the same batch until the provider rate-limits it. Every write is checked for the row it changed for that reason. Changing the embedding model or `EMBEDDING_DIMENSIONS` means re-embedding the corpus.
 
-Results are rendered as a WhatsApp carousel. The model never composes a card: it names the Jobs the finder reported, and the worker builds the cards from `job_listings` — title, posted date, an excerpt and the amount, with the Job's photo or a placeholder image. Each card carries `Soma zaidi`, which returns as a `job_detail:<id>` tap and is answered from the `get-job` tool with the Job's full description. A carousel Meta refuses degrades to the same cards as numbered text. The schema caps a reply at ten Jobs — Meta's carousel ceiling — and the finder returns at most nine.
+Results are rendered as a WhatsApp carousel. The model never composes a card: it names the Jobs the finder reported, and the worker builds the cards from `job_listings` — title, posted date, an excerpt and the amount, with the Job's photo or a placeholder image. Every card carries two buttons, `Omba` then `Soma zaidi`. `Soma zaidi` returns as a `job_detail:<id>` tap and is answered from the `get-job` tool with the Job's full description. `Omba` returns as a `job_apply:<id>` tap and is answered from the `apply-for-job` tool with the poster's phone number, so the two can talk directly — nothing is stored and the poster is not notified. Card bodies stay inside Meta's 160-character and two-line-break limits, because the sender rejects the whole carousel otherwise. A single matching Job cannot form a carousel (Meta's minimum is two cards), so it goes out as its detail text. A carousel Meta refuses degrades to the same cards as numbered text. The schema caps a reply at ten Jobs — Meta's carousel ceiling — and the finder returns at most nine.
 
-Not wired yet: paging (`zaidi`) needs a cursor that survives the Turn, and Omba has no storage or notification path behind it, so it is deliberately absent rather than faked.
+Not wired yet: paging (`zaidi`) needs a cursor that survives the Turn, so it is deliberately absent rather than faked.
 
 Kapso replies use `KAPSO_API_KEY`. The webhook endpoint uses `KAPSO_WEBHOOK_SECRET`, which must match the secret set on the Kapso webhook. `REDIS_URL` defaults to `redis://127.0.0.1:6379` if omitted.
 

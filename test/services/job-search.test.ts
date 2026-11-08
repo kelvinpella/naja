@@ -4,6 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import {
   cleanKeywords,
+  getJobPosterContact,
   listRecentJobs,
   publishJob,
   searchJobsHybrid,
@@ -39,6 +40,34 @@ function fakeRpcClient(result: { data?: unknown[]; error?: unknown }) {
     rpc: async (fn: string, args: Record<string, unknown>) => {
       calls.push({ fn, args });
       return result;
+    },
+  } as unknown as SupabaseClient;
+  return { client, calls };
+}
+
+function fakeRowClient(result: { data?: unknown; error?: unknown }) {
+  const calls = {
+    table: "",
+    select: "",
+    eqs: [] as [string, unknown][],
+  };
+  const builder = {
+    select(columns: string) {
+      calls.select = columns;
+      return builder;
+    },
+    eq(column: string, value: unknown) {
+      calls.eqs.push([column, value]);
+      return builder;
+    },
+    async maybeSingle() {
+      return result;
+    },
+  };
+  const client = {
+    from(table: string) {
+      calls.table = table;
+      return builder;
     },
   } as unknown as SupabaseClient;
   return { client, calls };
@@ -150,6 +179,37 @@ describe("listRecentJobs", () => {
       p_offset: 9,
       p_limit: JOB_PAGE_SIZE + 1,
     });
+  });
+});
+
+describe("getJobPosterContact", () => {
+  it("reads the poster's phone from the published Job row", async () => {
+    const { client, calls } = fakeRowClient({
+      data: { title: "Mpishi", created_by_phone: "+255712345678" },
+    });
+
+    const contact = await getJobPosterContact("job-1", client);
+
+    assert.deepEqual(contact, {
+      title: "Mpishi",
+      posterPhone: "+255712345678",
+    });
+    assert.equal(calls.table, "jobs");
+    assert.equal(calls.select, "title,created_by_phone");
+    assert.deepEqual(calls.eqs, [
+      ["id", "job-1"],
+      ["reviewed", true],
+    ]);
+  });
+
+  it("returns null for a Job that is missing or unpublished", async () => {
+    const { client } = fakeRowClient({ data: null });
+    assert.equal(await getJobPosterContact("job-1", client), null);
+  });
+
+  it("throws when the lookup fails, so the tool can report the Job gone", async () => {
+    const { client } = fakeRowClient({ data: null, error: new Error("boom") });
+    await assert.rejects(() => getJobPosterContact("job-1", client));
   });
 });
 

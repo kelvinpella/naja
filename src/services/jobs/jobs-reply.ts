@@ -1,7 +1,11 @@
 import type { FastifyBaseLogger } from "fastify";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { WhatsappReply } from "../whatsapp-reply-contract.js";
-import { buildJobCards } from "./job-cards.js";
+import {
+  buildJobCards,
+  jobDetailText,
+  MIN_CAROUSEL_CARDS,
+} from "./job-cards.js";
 import { getJobsByIds } from "./job-repository.js";
 
 /**
@@ -26,6 +30,17 @@ export async function resolveJobsReply(
       );
       return { kind: "text", body: reply.body };
     }
+
+    // Meta requires at least two cards, so a single Job goes out as its full
+    // detail text instead of a carousel the sender would reject.
+    const single = jobs[0];
+    if (single && jobs.length < MIN_CAROUSEL_CARDS) {
+      return {
+        kind: "text",
+        body: `${reply.body}\n\n${jobDetailText(single)}`,
+      };
+    }
+
     return { kind: "carousel", body: reply.body, cards: buildJobCards(jobs) };
   } catch (error) {
     // A carousel that cannot be built must not swallow the reply: the body is

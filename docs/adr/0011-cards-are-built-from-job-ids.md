@@ -3,11 +3,17 @@
 A search reply is a carousel, and the model's part of it is a `jobs` reply: one
 line of text plus the ids the job finder reported. The worker resolves those
 ids against `job_listings` and builds every card — image, title, date, excerpt,
-amount, and a `Soma zaidi` button carrying `job_detail:<id>`. Cards are never
-copied from model output, so a hallucinated id simply does not render, and the
-model never sees or repeats image URLs. If the card list cannot be built, the
-reply degrades to its body as text; if Meta rejects the carousel, the cards go
-out as numbered text instead.
+amount, and the two buttons `Omba` and `Soma zaidi`, carrying `job_apply:<id>`
+and `job_detail:<id>`. Cards are never copied from model output, so a
+hallucinated id simply does not render, and the model never sees or repeats
+image URLs. If the card list cannot be built, the reply degrades to its body as
+text; if Meta rejects the carousel, the cards go out as numbered text instead.
+
+`Soma zaidi` is answered from the `get-job` tool with the Job's full text.
+`Omba` restores the pre-Mastra behaviour: `apply-for-job` reads the poster's
+phone from `jobs` (`job_listings` omits it) and replies with the number so the
+two can talk. There is still no application record or poster notification, so
+"Omba" means "here is how to reach them", not "your application was sent".
 
 ## Considered Options
 

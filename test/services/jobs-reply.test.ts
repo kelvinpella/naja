@@ -59,14 +59,31 @@ describe("resolveJobsReply", () => {
     if (resolved.kind !== "carousel") return;
     assert.equal(resolved.body, jobsReply.body);
     assert.deepEqual(
-      resolved.cards.map((card) => card.buttons[0]?.id),
-      ["job_detail:job-2", "job_detail:job-1"],
+      resolved.cards.map((card) => card.buttons.map((b) => b.id)),
+      [
+        ["job_apply:job-2", "job_detail:job-2"],
+        ["job_apply:job-1", "job_detail:job-1"],
+      ],
     );
   });
 
   it("passes a non-jobs reply straight through", async () => {
     const text: ModelReply = { kind: "text", body: "Sawa" };
     assert.equal(await resolveJobsReply(text, silentLogger), text);
+  });
+
+  it("sends a single Job as text, because a carousel needs two cards", async () => {
+    const resolved = await resolveJobsReply(
+      { ...jobsReply, jobIds: ["job-1"] },
+      silentLogger,
+      clientReturning([row("job-1")]),
+    );
+
+    assert.equal(resolved.kind, "text");
+    if (resolved.kind !== "text") return;
+    assert.ok(resolved.body.startsWith(jobsReply.body));
+    assert.ok(resolved.body.includes("*Kazi job-1*"));
+    assert.ok(resolved.body.includes("Tsh 50,000"));
   });
 
   it("falls back to text when no id resolves", async () => {

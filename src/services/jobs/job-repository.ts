@@ -216,6 +216,27 @@ export async function getJobsByIds(
     .filter((job): job is JobListing => job !== undefined);
 }
 
+/**
+ * The poster's contact for a tapped `Omba`. `job_listings` deliberately leaves
+ * the phone out, so this reads `jobs` directly. A Job that is not published
+ * resolves to null, the same as one that does not exist.
+ */
+export async function getJobPosterContact(
+  id: string,
+  client?: SupabaseClient,
+): Promise<{ title: string | null; posterPhone: string | null } | null> {
+  const { data, error } = await (client ?? getJobsClient())
+    .from("jobs")
+    .select("title,created_by_phone")
+    .eq("id", id)
+    .eq("reviewed", true)
+    .maybeSingle();
+  if (error) throw new Error("Job poster lookup failed", { cause: error });
+  if (!data) return null;
+  const row = data as { title: string | null; created_by_phone: string | null };
+  return { title: row.title, posterPhone: row.created_by_phone ?? null };
+}
+
 /** The newest published Jobs, excluding the viewer's own (Recent jobs). */
 export async function listRecentJobs(
   offset = 0,
