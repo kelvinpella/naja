@@ -56,6 +56,14 @@ _Avoid_: gig, posting, listing
 The moment a Job becomes visible to others, and the only thing that makes it appear in listings. A Person is told when their Job reaches it, and never before.
 _Avoid_: approval, going live, activation
 
+**Search**:
+A Tafuta kazi exchange in which Naja looks for published Jobs matching what a Person needs, in the language they used or the other one.
+_Avoid_: query, lookup, find job flow
+
+**Recent jobs**:
+The newest published Jobs, shown when a Person wants to browse rather than search for something in particular.
+_Avoid_: mixed list, tafuta kazi mchanganyiko, browse feed
+
 **Tangaza kazi**:
 The Option through which a Person posts a Job; code calls it `post_job`. It opens Naja's job Form, not a chat.
 _Avoid_: post job menu, job wizard
