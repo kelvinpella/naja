@@ -45,7 +45,15 @@ export function createPostingProcessor({
     });
 
     if (result.status === "success") {
-      const { jobId, title } = result.result;
+      const { jobId, title, embedded } = result.result;
+      if (!embedded) {
+        // Publication is not hostage to the embedding provider: the Job is
+        // live and keyword-searchable, and the backfill will catch up.
+        logger.warn(
+          { eventId: job.data.eventId, jobId },
+          "Job published without an embedding; run npm run jobs:embed",
+        );
+      }
       const published = postJobPublished(title);
       let sent = false;
 
