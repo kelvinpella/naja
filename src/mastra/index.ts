@@ -5,6 +5,7 @@ import {
   SensitiveDataFilter,
 } from "@mastra/observability";
 import { najaAgent } from "./agents/naja.js";
+import { searchAgent } from "./agents/search.js";
 import { memoryStorage } from "./storage.js";
 import { postJobWorkflow } from "./workflows/post-job.js";
 
@@ -13,7 +14,9 @@ import { postJobWorkflow } from "./workflows/post-job.js";
 // through it is not optional: registration is what hands the agent the
 // observability config, so `mastra.getAgent("naja")` is the traced path.
 export const mastra = new Mastra({
-  agents: { naja: najaAgent },
+  // `search` is also Naja's subagent; registering it here is what makes its
+  // runs and traces visible in Studio next to the Turn that delegated.
+  agents: { naja: najaAgent, search: searchAgent },
   // Posting a job runs as a workflow, so each moderation-and-publish run is
   // inspectable in Studio next to the Turn that triggered it.
   workflows: { postJob: postJobWorkflow },
