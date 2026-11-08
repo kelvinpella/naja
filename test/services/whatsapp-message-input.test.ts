@@ -61,6 +61,20 @@ describe("toAgentInput", () => {
     );
   });
 
+  it("carries a tapped card's payload to the agent", () => {
+    assert.equal(
+      toAgentInput(
+        makeJob({
+          text: undefined,
+          messageType: "interactive",
+          interactiveTitle: "Soma zaidi",
+          interactiveId: "job_detail:job-1",
+        }),
+      ),
+      "[tapped option] Soma zaidi (job_detail:job-1)",
+    );
+  });
+
   it("describes a Flow completion that is not ours instead of a tap", () => {
     assert.equal(
       toAgentInput(

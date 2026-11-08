@@ -145,3 +145,38 @@ describe("toWhatsappReply", () => {
     assert.equal(toWhatsappReply(undefined, "   "), null);
   });
 });
+
+describe("jobs replies", () => {
+  const jobsReply = {
+    kind: "jobs",
+    body: "Hizi ndizo kazi zinazofanana",
+    jobIds: ["job-1"],
+  };
+
+  it("accepts a carousel of named Jobs", () => {
+    assert.equal(replySchema.safeParse(jobsReply).success, true);
+  });
+
+  it("refuses more Jobs than a carousel can hold", () => {
+    const parsed = replySchema.safeParse({
+      ...jobsReply,
+      jobIds: Array.from({ length: 11 }, (_, index) => `job-${index}`),
+    });
+    assert.equal(parsed.success, false);
+  });
+
+  it("renders the cards as numbered text when the carousel cannot be shown", () => {
+    const text = renderReplyText({
+      kind: "carousel",
+      body: "Hizi kazi",
+      cards: [
+        {
+          imageUrl: "https://example.test/photo.jpg",
+          body: "*Mpishi*\n07/10/26",
+          buttons: [{ id: "job_detail:job-1", title: "Soma zaidi" }],
+        },
+      ],
+    });
+    assert.equal(text, "Hizi kazi\n\n1. *Mpishi*\n07/10/26");
+  });
+});

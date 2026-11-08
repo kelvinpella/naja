@@ -3,6 +3,8 @@ import { Memory } from "@mastra/memory";
 import { memoryStorage } from "../storage.js";
 import { resolveAgentModel } from "../model.js";
 import { najaInstructions } from "./naja-instructions.js";
+import { searchAgent } from "./search.js";
+import { applyForJobTool, getJobTool } from "../tools/job-tools.js";
 
 // Observational Memory compresses long threads into an observation log, so a
 // person can keep messaging for months without the window filling with raw
@@ -23,4 +25,10 @@ export const najaAgent = new Agent({
   instructions: najaInstructions,
   model: resolveAgentModel(),
   memory: najaMemory,
+  // Delegation, not a direct tool: the job finder owns query understanding and
+  // the search itself. The generated tool is `agent-search` (ADR 0010).
+  agents: { search: searchAgent },
+  // A tapped card opens one Job, or shares the poster's number: lookups, not
+  // searches.
+  tools: { getJob: getJobTool, applyForJob: applyForJobTool },
 });

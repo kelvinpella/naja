@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_CAROUSEL_CARDS } from "./jobs/job-cards.js";
 
 // Meta caps interactive messages far tighter than plain text, so the schema
 // below encodes those caps rather than letting a reply fail at send time. A
@@ -132,6 +133,29 @@ const replySchemaByKind = [
 
   z.object({
     kind: z
+      .literal("jobs")
+      .describe(
+        "A swipeable carousel of Jobs. Use it whenever the job finder reports one or more Jobs: name the ids and the cards are rendered from the database, so do not paste titles, areas or budgets into the body.",
+      ),
+    body: z
+      .string()
+      .trim()
+      .min(1)
+      .max(MAX_INTERACTIVE_BODY_LENGTH)
+      .describe(
+        "One line above the cards, in the person's language, saying what you looked for.",
+      ),
+    jobIds: z
+      .array(z.string().trim().min(1))
+      .min(1)
+      .max(MAX_CAROUSEL_CARDS)
+      .describe(
+        "The ids the job finder reported, in its ranking order, at most ten. Never invent an id.",
+      ),
+  }),
+
+  z.object({
+    kind: z
       .literal("cta_url")
       .describe(
         "A reply with one link button. Use it when the person should open a page — terms, a site.",
@@ -179,7 +203,24 @@ const replySchemaByKind = [
 
 export const replySchema = z.discriminatedUnion("kind", replySchemaByKind);
 
-export type WhatsappReply = z.infer<typeof replySchema>;
+export type ModelReply = z.infer<typeof replySchema>;
+
+/**
+ * A carousel is never chosen by the model: the worker resolves a `jobs` reply
+ * into cards, because only the database knows the images and the exact text
+ * Meta will accept. It is part of the send contract, not the model's schema.
+ */
+export type CarouselReply = {
+  kind: "carousel";
+  body: string;
+  cards: {
+    imageUrl: string;
+    body: string;
+    buttons: { id: string; title: string }[];
+  }[];
+};
+
+export type WhatsappReply = ModelReply | CarouselReply;
 
 const FALLBACK_LOCATION_BUTTON = "Tuma eneo";
 
@@ -203,6 +244,13 @@ export function renderReplyText(reply: WhatsappReply): string {
       // A Flow cannot be rendered as text, so the body is all that can be sent
       // instead; it is written to stand on its own.
       return reply.body;
+    case "jobs":
+      // The ids are meaningless to a reader; the cards are what carries them.
+      return reply.body;
+    case "carousel":
+      return `${reply.body}\n\n${reply.cards
+        .map((card, index) => `${index + 1}. ${card.body}`)
+        .join("\n\n")}`;
     case "buttons":
       return withNumberedChoices(
         reply.body,

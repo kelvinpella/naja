@@ -5,6 +5,7 @@ import {
   deletePostJobImage,
   uploadPostJobImage,
 } from "../../services/jobs/job-image-storage.js";
+import { embedJobTextOrNull } from "../../services/jobs/embeddings.js";
 import { publishJob } from "../../services/jobs/job-repository.js";
 import { moderatePosting } from "../../services/jobs/moderation.js";
 
@@ -48,6 +49,9 @@ const postingStateSchema = z.object({
 const publishOutputSchema = z.object({
   jobId: z.string(),
   title: z.string(),
+  // False when the provider failed: the Job is live but only keyword-searchable
+  // until `npm run jobs:embed` fills the vector in (ADR 0008).
+  embedded: z.boolean(),
 });
 
 function kapsoApiKey(): string {
@@ -120,17 +124,25 @@ const publishStep = createStep({
     }
 
     const digits = (inputData.senderPhone ?? "").replace(/\D/g, "");
+    const details = {
+      title: inputData.details.title.slice(0, 80),
+      description: inputData.details.description.slice(0, 500),
+      area: inputData.details.area.slice(0, 80),
+    };
+    // One write: the vector rides on the insert. A failure returns null, and
+    // publishing still happens — search just cannot see it semantically yet.
+    const embedding = await embedJobTextOrNull(details);
+
     let created;
     try {
       created = await publishJob({
-        title: inputData.details.title.slice(0, 80),
-        description: inputData.details.description.slice(0, 500),
-        area: inputData.details.area.slice(0, 80),
+        ...details,
         budget: inputData.details.budget,
         jobImage,
         // jobs.created_by_phone has an E.164 check constraint; senderPhone is
         // digits-only, so the leading + goes back on.
         posterPhone: digits ? `+${digits}` : null,
+        embedding,
       });
     } catch (error) {
       if (imagePath) await deletePostJobImage(imagePath);
@@ -141,6 +153,7 @@ const publishStep = createStep({
     return {
       jobId: created.id,
       title: created.title ?? inputData.details.title,
+      embedded: embedding !== null,
     };
   },
 });

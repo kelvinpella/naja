@@ -36,6 +36,9 @@ export type WhatsappIncomingMessageJob = {
   messageType?: string;
   caption?: string;
   interactiveTitle?: string;
+  // The payload of a button/list/quick-reply tap. Carousel cards carry
+  // `job_detail:<id>`, so dropping it would make a tap untraceable.
+  interactiveId?: string;
   // `nfm_reply` for a completed Flow, `button_reply`/`list_reply` for a tap.
   // Kapso's webhook carries the Flow's answers nowhere, so this is what tells
   // the worker it has to read the completion back (see whatsapp-flow-completion).
