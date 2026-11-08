@@ -42,6 +42,8 @@ Development routes Turns through [FreeLLMAPI](https://github.com/tashfeenahmed/f
 
 With `FREELLMAPI_API_KEY` set, the agent talks to `http://localhost:3001/v1` and sends the model id `auto`, letting the router choose. `FREELLMAPI_BASE_URL` changes the endpoint and `FREELLMAPI_MODEL` picks a model or routing strategy (`auto:fast`, `auto:smart`, a profile). FreeLLMAPI is for personal experimentation only — unset `FREELLMAPI_API_KEY` to fall back to `openai/gpt-6-luna`.
 
+The same key and base URL produce embeddings for Tafuta kazi (`gemini-embedding-001`), so search needs the router running; without it, search reports itself unavailable while posting keeps working.
+
 ## Run locally
 
 The development script starts local Redis when needed, then starts the API and the separate BullMQ worker:
@@ -86,13 +88,33 @@ Jobs retry up to five times with exponential backoff. Exhausted jobs are copied 
 
 ## Agent
 
-The worker imports `src/mastra/index.ts` and runs one Turn per inbound message, resolving the agent through that instance (`mastra.getAgent("naja")`) so traces attach, with no separate Mastra server involved. The agent is `openai/gpt-6-luna`, or `auto` through FreeLLMAPI when `FREELLMAPI_API_KEY` is set (see [Model](#model)), with a Swahili-first prompt that mirrors the user's language; it has no tools yet, and it is instructed to say so rather than pretend to search or apply. The one action it can take is sending the post job Flow (see [Post job Flow](#post-job-flow)).
+The worker imports `src/mastra/index.ts` and runs one Turn per inbound message, resolving the agent through that instance (`mastra.getAgent("naja")`) so traces attach, with no separate Mastra server involved. The agent is `openai/gpt-6-luna`, or `auto` through FreeLLMAPI when `FREELLMAPI_API_KEY` is set (see [Model](#model)), with a Swahili-first prompt that mirrors the user's language. It has three actions: it delegates Tafuta kazi to the `search` subagent (see [Tafuta kazi](#tafuta-kazi)), it looks up a single Job with the `get-job` tool when a card is tapped, and it sends the post job Flow (see [Post job Flow](#post-job-flow)).
 
 Each Person has one conversation for life, and the Thread id is the hashed sender identity, so history survives phone-number changes and Redis restarts. Every Person shares one memory `resource` (`naja`), because that is how [Studio](#studio) lists Threads; the Thread is titled with the Person's phone number. Memory is stored in a local LibSQL file at `.data/mastra.db` (git-ignored), and [Observational Memory](https://mastra.ai/docs/memory/observational-memory) compresses older history into observations so long conversations do not fill the context window. The file is per-worker: run a single worker process, and switch to a shared database before scaling out.
 
 Media is not read this round. Images, voice notes, documents, stickers, and locations reach the model as typed placeholders such as `[voice note]` or `[image] caption: "..."`, and the prompt requires the agent to tell the user it can only handle text.
 
 Replies are plain text, split only when they exceed WhatsApp's 4096-character limit, and carry a derived idempotency key in `biz_opaque_callback_data`.
+
+## Tafuta kazi
+
+Finding work is a hybrid search: keyword matching in Swahili and English, plus semantic matching, fused with reciprocal rank fusion. Naja delegates to a stateless `search` subagent, which turns what the Person said into one to five job terms per language and calls `hybrid_search_jobs()`; the backend embeds their original words for the semantic side. A search is announced the moment it is delegated, so the Person is not left waiting in silence.
+
+Apply `supabase/migrations/20261013000003_hybrid_job_search.sql` in the dashboard before using search. It enables pgvector, adds `jobs.embedding vector(1536)` with an HNSW cosine index, creates `job_listings` (the column projection search may return), `hybrid_search_jobs()` and `list_recent_jobs()`, and drops the old `search_jobs()`.
+
+Embeddings come from FreeLLMAPI: `gemini-embedding-001` is requested at 1536 dimensions and L2-normalized in code (pgvector's HNSW index stops at 2000 dimensions, see `docs/adr/0008-embeddings-at-1536-dimensions.md`). `EMBEDDING_MODEL` overrides the model id. A query must be embedded for a search to run: if the key is unset or the router is down, Naja says search is unavailable and offers the newest Jobs instead.
+
+Jobs are embedded on publication, in the same insert. If that fails, the Job is published anyway without a vector and the Posting logs a warning; the backfill catches up:
+
+```sh
+npm run jobs:embed
+```
+
+It only selects rows where `embedding is null`, so it is safe to run repeatedly. Changing the embedding model or `EMBEDDING_DIMENSIONS` means re-embedding the corpus.
+
+Results are rendered as a WhatsApp carousel. The model never composes a card: it names the Jobs the finder reported, and the worker builds the cards from `job_listings` — title, posted date, an excerpt and the amount, with the Job's photo or a placeholder image. Each card carries `Soma zaidi`, which returns as a `job_detail:<id>` tap and is answered from the `get-job` tool with the Job's full description. A carousel Meta refuses degrades to the same cards as numbered text. The schema caps a reply at ten Jobs — Meta's carousel ceiling — and the finder returns at most nine.
+
+Not wired yet: paging (`zaidi`) needs a cursor that survives the Turn, and Omba has no storage or notification path behind it, so it is deliberately absent rather than faked.
 
 Kapso replies use `KAPSO_API_KEY`. The webhook endpoint uses `KAPSO_WEBHOOK_SECRET`, which must match the secret set on the Kapso webhook. `REDIS_URL` defaults to `redis://127.0.0.1:6379` if omitted.
 
@@ -113,7 +135,7 @@ The Flow has two screens: title, description, area and budget, then one optional
 `src/workers/postings.ts` runs each Posting through the `post-job` workflow in `src/mastra/workflows/post-job.ts` (visible in Studio), then reports the outcome:
 
 1. **moderate** — an automatic check of the text and the photo. `src/services/jobs/moderation.ts` is a placeholder that always passes; the photo is downloaded here and its bytes discarded, so they never enter workflow state.
-2. **publish** — uploads the photo to the public `job_images` bucket and inserts the Job into Supabase `jobs` with `reviewed: true`. The column is the visibility gate, so publishing is what sets it; the codebase no longer waits for a human to flip it.
+2. **publish** — uploads the photo to the public `job_images` bucket, embeds the Job, and inserts it into Supabase `jobs` with `reviewed: true` and its `embedding` in the same row. The column is the visibility gate, so publishing is what sets it; the codebase no longer waits for a human to flip it. A failed embedding leaves the column null and the Job published anyway.
 3. **report** — the worker, not a step: sends `🎉 … limechapishwa` and appends the outcome to Memory. It never throws, so a failed send cannot publish the same Job twice.
 
 A Posting is attempted three times with backoff. When the third fails, the Person gets one apology whose button opens the same Flow prefilled with what they typed — the photo is the one thing they must pick again — and any image already uploaded is deleted. The prefill rides on `flow_action_payload.data`, which the DETAILS screen reads as `${data.initValues}`; that path is documented by Meta and valid against the Flow JSON, but has not been confirmed against a live draft Flow yet.

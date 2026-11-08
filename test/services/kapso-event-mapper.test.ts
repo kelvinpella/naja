@@ -211,6 +211,8 @@ describe("toWhatsappMessageJob content", () => {
       },
     });
     assert.equal(job?.interactiveTitle, "Tafuta kazi");
+    // The payload is what identifies a carousel card's Job, so it is kept.
+    assert.equal(job?.interactiveId, "old_menu");
     assert.equal(job?.interactiveType, "button_reply");
   });
 });

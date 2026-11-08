@@ -4,6 +4,14 @@ function withCaption(placeholder: string, caption?: string): string {
   return caption ? `${placeholder} caption: "${caption}"` : placeholder;
 }
 
+/** A tap carries the button's payload beside its label; carousel cards put a Job id there. */
+function tapped(job: WhatsappIncomingMessageJob): string {
+  if (!job.interactiveTitle) return "[tapped option]";
+  return job.interactiveId
+    ? `[tapped option] ${job.interactiveTitle} (${job.interactiveId})`
+    : `[tapped option] ${job.interactiveTitle}`;
+}
+
 /**
  * Turns an inbound message into the text the model sees. Media cannot be
  * opened this round, so it arrives as an explicit placeholder: the agent is
@@ -35,16 +43,14 @@ export function toAgentInput(job: WhatsappIncomingMessageJob): string {
     case "reaction":
       return "[reaction to an earlier message]";
     case "interactive":
-      if (job.interactiveTitle) return `[tapped option] ${job.interactiveTitle}`;
+      if (job.interactiveTitle) return tapped(job);
       // A completion whose token is not ours still reaches the agent; say what
       // it is rather than pretending it was a button tap.
       return job.flowResponse !== undefined
         ? "[completed a form]"
         : "[tapped option]";
     case "button":
-      return job.interactiveTitle
-        ? `[tapped option] ${job.interactiveTitle}`
-        : "[tapped option]";
+      return tapped(job);
     default:
       return job.messageType
         ? `[${job.messageType} message]`

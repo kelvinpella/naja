@@ -4,6 +4,7 @@ import type { Redis } from "ioredis";
 import type { WhatsappIncomingMessageJob } from "../queues/whatsapp-events.js";
 import type { PostingJob } from "../queues/postings.js";
 import { isPostJobFlowToken } from "../services/flows/post-job-flow.js";
+import { resolveJobsReply } from "../services/jobs/jobs-reply.js";
 import {
   handlePostJobSubmission,
   PostingEnqueueError,
@@ -110,7 +111,10 @@ export function createWhatsappEventProcessor({
       return;
     }
 
-    await sendWhatsappReply(incoming, reply, kapsoApiKey, logger, signal);
+    // A `jobs` reply names ids; the rows, images and card text come from the
+    // database, so nothing the model wrote is rendered as a card.
+    const resolved = await resolveJobsReply(reply, logger);
+    await sendWhatsappReply(incoming, resolved, kapsoApiKey, logger, signal);
   };
 
   /**

@@ -43,6 +43,19 @@ function readInteractiveTitle(
 }
 
 /**
+ * The button's payload, which is where carousel cards put the Job id. The
+ * title alone cannot identify a Job, so both travel to the agent.
+ */
+function readInteractiveId(message: KapsoInboundMessage): string | undefined {
+  const interactive = message.interactive;
+  return (
+    asString(interactive?.button_reply?.id) ??
+    asString(interactive?.list_reply?.id) ??
+    asString(message.button?.payload)
+  );
+}
+
+/**
  * A Flow completion carries its payload twice: Kapso's `flow_response` and
  * Meta's `interactive.nfm_reply.response_json`, one of them often as a JSON
  * string. Return it parsed when possible so callers never re-parse.
@@ -120,6 +133,7 @@ export function toWhatsappMessageJob(
     messageType,
     caption: readCaption(message),
     interactiveTitle: readInteractiveTitle(message),
+    interactiveId: readInteractiveId(message),
     interactiveType: asString(message.interactive?.type),
     // Both are usually absent: Kapso forwards Meta's webhook, where a Flow
     // completion is only `interactive.type: "nfm_reply"`. The worker reads the

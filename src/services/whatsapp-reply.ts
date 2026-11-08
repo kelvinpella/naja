@@ -11,6 +11,7 @@ import {
 import { getKapsoClient, recipientTarget, withAbort } from "./kapso-client.js";
 import {
   locationRequestButton,
+  renderReplyText,
   type WhatsappReply,
 } from "./whatsapp-reply-contract.js";
 
@@ -167,6 +168,55 @@ export async function sendWhatsappReply(
 
     case "flow":
       return sendPostJobFlow(job, { body: reply.body }, apiKey, logger, signal);
+
+    case "carousel":
+      try {
+        await withAbort(
+          kapso.messages.sendInteractiveCarousel({
+            ...target,
+            bodyText: reply.body,
+            cards: reply.cards.map((card, index) => ({
+              cardIndex: index,
+              header: { type: "image", image: { link: card.imageUrl } },
+              bodyText: card.body,
+              action: { buttons: card.buttons },
+            })),
+            bizOpaqueCallbackData: callbackData,
+          }),
+          signal,
+        );
+        return 1;
+      } catch (error) {
+        signal.throwIfAborted();
+        // Card images are remote URLs, so a carousel can fail where text would
+        // not; the Jobs themselves are still worth sending.
+        logger.warn(
+          { err: error, eventId: job.eventId },
+          "Carousel send failed; sending the Jobs as text",
+        );
+        return sendWhatsappReply(
+          job,
+          { kind: "text", body: renderReplyText(reply) },
+          apiKey,
+          logger,
+          signal,
+        );
+      }
+
+    case "jobs":
+      // Unresolved `jobs` replies are a worker bug; the ids are not readable,
+      // so only the body can go out.
+      logger.warn(
+        { eventId: job.eventId },
+        "Jobs reply reached the sender unresolved; sending its body as text",
+      );
+      return sendWhatsappReply(
+        job,
+        { kind: "text", body: reply.body },
+        apiKey,
+        logger,
+        signal,
+      );
 
     case "buttons":
       await withAbort(
